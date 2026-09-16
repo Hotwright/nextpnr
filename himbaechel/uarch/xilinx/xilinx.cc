@@ -78,13 +78,30 @@ void XilinxImpl::init_database(Arch *arch)
     const ArchArgs &args = arch->args;
     init_uarch_constids(arch);
     std::smatch match;
-    std::regex devicere = std::regex("(xc7[azkv]\\d+t?)([a-z0-9]+)-(\\dL?)");
+    // The first alternative covers the single-core Zynq parts (xc7z007s,
+    // xc7z012s, xc7z014s), whose "s" would otherwise be swallowed into the
+    // package field. "s" is also added to the family class so that Spartan-7
+    // part names parse at all - an xc7s50 chipdb is built, but no xc7s* part
+    // name matched the old pattern.
+    std::regex devicere = std::regex("(xc7z\\d+s|xc7[azkvs]\\d+t?)([a-z0-9]+)-(\\dL?)");
     if (!std::regex_match(args.device, match, devicere)) {
         log_error("Invalid device %s\n", args.device.c_str());
     }
     std::string die = match[1].str();
     if (die == "xc7a35t")
         die = "xc7a50t";
+    // The single-core Zynq Z-7007S shares its PL die with the Z-7010: every
+    // tile name, tile type, site name and site type matches position for
+    // position, exactly as xc7a35t does with xc7a50t above. Only the PS side
+    // differs (one Cortex-A9 rather than two), which the fabric chipdb does
+    // not describe.
+    if (die == "xc7z007s")
+        die = "xc7z010";
+    // Likewise the Z-7014S shares the Z-7020 PL die. (The Z-7012S and Z-7015
+    // do NOT alias onto anything already built - they are distinct dies and
+    // would each need their own chipdb.)
+    if (die == "xc7z014s")
+        die = "xc7z020";
     arch->load_chipdb(stringf("xilinx/chipdb-%s.bin", die.c_str()));
     std::string package = match[2].str();
     arch->set_package(package);
