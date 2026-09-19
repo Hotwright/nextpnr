@@ -39,6 +39,7 @@
 #include <set>
 
 #include "log.h"
+#include "npnr_lock.h"
 #include "nextpnr.h"
 #include "nextpnr_assertions.h"
 #include "router1.h"
@@ -1706,7 +1707,7 @@ struct Router2
         ThreadContext st;
         int iter = 1;
 
-        std::unique_lock<Context> lock{*ctx};
+        ScopeUniqueLock<Context> lock{*ctx};
 
         for (size_t i = 0; i < nets_by_udata.size(); i++)
             route_queue.push_back(i);

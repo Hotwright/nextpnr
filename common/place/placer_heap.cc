@@ -45,6 +45,7 @@
 #include "array2d.h"
 #include "fast_bels.h"
 #include "log.h"
+#include "npnr_lock.h"
 #include "nextpnr.h"
 #include "parallel_refine.h"
 #include "place_common.h"
@@ -176,7 +177,7 @@ class HeAPPlacer
     {
         auto startt = std::chrono::high_resolution_clock::now();
 
-        std::unique_lock<Context> lock{*ctx};
+        ScopeUniqueLock<Context> lock{*ctx};
         place_constraints();
         build_fast_bels();
         alloc_control_sets();

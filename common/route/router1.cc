@@ -23,6 +23,7 @@
 #include <queue>
 
 #include "log.h"
+#include "npnr_lock.h"
 #include "router1.h"
 #include "timing.h"
 
@@ -1163,7 +1164,7 @@ bool router1(Context *ctx, const Router1Cfg &cfg)
     try {
         log_break();
         log_info("Routing..\n");
-        std::lock_guard<Context> lock{*ctx};
+        ScopeLock<Context> lock{*ctx};
         auto rstart = std::chrono::high_resolution_clock::now();
 
         log_info("Setting up routing queue.\n");

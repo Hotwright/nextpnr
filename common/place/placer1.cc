@@ -42,6 +42,7 @@
 #include <vector>
 #include "fast_bels.h"
 #include "log.h"
+#include "npnr_lock.h"
 #include "place_common.h"
 #include "timing.h"
 #include "util.h"
@@ -138,7 +139,7 @@ class SAPlacer
     {
         log_break();
 
-        std::lock_guard<Context> lock{*ctx};
+        ScopeLock<Context> lock{*ctx};
 
         size_t placed_cells = 0;
         std::vector<CellInfo *> autoplaced;
