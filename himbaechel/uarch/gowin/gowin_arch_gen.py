@@ -87,6 +87,7 @@ DLLDLY_Z    = 303 # : 305 reserve for 2 DLLDLYs
 PINCFG_Z    = 400
 ADC_Z       = 401
 GW_JTAG_Z      = 402
+AE350_SOC_Z    = 403
 
 DSP_Z          = 509
 
@@ -1085,6 +1086,16 @@ def create_extra_funcs(tt: TileType, db: chipdb, x: int, y: int):
                 portmap = desc['outs']
                 for port, wire in portmap.items():
                     create_reuse_wire(tt, wire, "EMCU_OUT")
+                    tt.add_bel_pin(bel, port, wire, PinType.OUTPUT)
+        elif func == 'ae350':
+                bel = tt.create_bel("AE350_SOC", "AE350_SOC", AE350_SOC_Z)
+                portmap = desc['ins']
+                for port, wire in portmap.items():
+                    create_reuse_wire(tt, wire, "AE350_IN")
+                    tt.add_bel_pin(bel, port, wire, PinType.INPUT)
+                portmap = desc['outs']
+                for port, wire in portmap.items():
+                    create_reuse_wire(tt, wire, "AE350_OUT")
                     tt.add_bel_pin(bel, port, wire, PinType.OUTPUT)
         elif func == 'pincfg':
                 bel = tt.create_bel("PINCFG", "PINCFG", PINCFG_Z)
