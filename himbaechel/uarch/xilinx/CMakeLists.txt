@@ -11,6 +11,8 @@ set(SOURCES
     pack_dsp_xc7.cc
     pack.h
     pack_io.cc
+    pack_io_usp.cc
+    pack_clocking_usp.cc
     pins.cc
     pins.h
     xdc.cc
@@ -25,6 +27,8 @@ add_nextpnr_himbaechel_microarchitecture(${uarch}
 
 set(HIMBAECHEL_PRJXRAY_DB "" CACHE STRING
     "Path to a project x-ray database")
+set(HIMBAECHEL_USP_DB "" CACHE STRING
+    "Directory holding one RapidWright dump per UltraScale+ device (<dir>/<device>), from gen/rapidwright/UspDump.java")
 if (NOT HIMBAECHEL_PRJXRAY_DB AND NOT IMPORT_BBA_FILES)
     message(FATAL_ERROR "HIMBAECHEL_PRJXRAY_DB must be set to a prjxray database checkout")
 endif()
@@ -42,7 +46,13 @@ if (NOT XilinxChipdb_Python3_EXECUTABLE)
 endif()
 
 foreach (device ${HIMBAECHEL_XILINX_DEVICES})
-    if (device MATCHES "^xc7a")
+    if (device MATCHES "^xc(k|zu)")
+        # UltraScale+: the chipdb is generated from a RapidWright dump.
+        if (NOT HIMBAECHEL_USP_DB)
+            message(FATAL_ERROR "HIMBAECHEL_USP_DB must be set to build UltraScale+ device ${device}")
+        endif()
+        set(GEN_DB_ARGS --usp-db ${HIMBAECHEL_USP_DB}/${device})
+    elseif (device MATCHES "^xc7a")
         set(XRAY_SUBDIR "artix7")
     elseif (device MATCHES "^xc7k")
         set(XRAY_SUBDIR "kintex7")
@@ -52,13 +62,16 @@ foreach (device ${HIMBAECHEL_XILINX_DEVICES})
         set(XRAY_SUBDIR "zynq7")
     else()
         message(FATAL_ERROR "Unsupported Xilinx device family for device: ${device}. "
-                            "Expected prefix xc7a, xc7k, xc7s or xc7z.")
+                            "Expected prefix xc7a, xc7k, xc7s, xc7z, xck or xczu.")
+    endif()
+    if (NOT device MATCHES "^xc(k|zu)")
+        set(GEN_DB_ARGS --xray ${HIMBAECHEL_PRJXRAY_DB}/${XRAY_SUBDIR})
     endif()
     add_bba_produce_command(
         TARGET  nextpnr-himbaechel-xilinx-bba
         COMMAND ${XilinxChipdb_Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/gen/xilinx_gen.py
-            --xray ${HIMBAECHEL_PRJXRAY_DB}/${XRAY_SUBDIR}
+            ${GEN_DB_ARGS}
             --device ${device}
             --bba ${CMAKE_CURRENT_BINARY_DIR}/chipdb-${device}.bba.new
         OUTPUT

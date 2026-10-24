@@ -295,7 +295,7 @@ struct FasmBackend
             if (!pp.empty())
                 last_was_blank = false;
         } else {
-            if (extra_data.pip_config == 1)
+            if (extra_data.pip_config & 1)
                 log_warning("Unprocessed route-thru %s.%s.%s\n!", tile_type.c_str(ctx), src.c_str(ctx), dst.c_str(ctx));
 
             std::string tile_name = uarch->tile_name(pip.tile);

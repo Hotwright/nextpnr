@@ -91,7 +91,13 @@ void XilinxImpl::init_database(Arch *arch)
     // is why it went unnoticed. Checked against all 42 part names: 42 accepted,
     // none resolving to the wrong die.
     std::regex devicere = std::regex("(xc7z\\d+s|xc7[azks]\\d+t?|xc7v[xh]?\\d+t?)([a-z0-9]+)-(\\dL?)");
-    if (!std::regex_match(args.device, match, devicere)) {
+    // UltraScale+ part names carry a dash between die and package and a
+    // longer speed/temperature suffix: xck26-sfvc784-2LV-c. The chipdb for
+    // these comes from RapidWright (gen/rapidwright), not from prjxray.
+    std::regex uspdevicere = std::regex("(xck\\d+|xczu\\d+[a-z]+)-?([a-z]+\\d+)-(\\d[A-Za-z]*)(-[a-z])?");
+    if (std::regex_match(args.device, match, uspdevicere)) {
+        usp = true;
+    } else if (!std::regex_match(args.device, match, devicere)) {
         log_error("Invalid device %s\n", args.device.c_str());
     }
     std::string die = match[1].str();
@@ -228,13 +234,15 @@ void XilinxImpl::update_logic_bel(BelId bel, CellInfo *cell)
         tts.lts = std::make_unique<LogicTileStatus>();
     auto &ts = *(tts.lts);
     auto tags = get_tags(cell), last_tags = get_tags(ts.cells[z]);
-    if ((z == ((3 << 4) | BEL_6LUT)) || (z == ((3 << 4) | BEL_5LUT))) {
+    // The memory write port is the top LUT: D on Series-7, H on UltraScale+.
+    const int wport = usp ? 7 : 3;
+    if ((z == ((wport << 4) | BEL_6LUT)) || (z == ((wport << 4) | BEL_5LUT))) {
         if ((tags && tags->lut.is_memory) || (last_tags && last_tags->lut.is_memory)) {
             // Special case - memory write port invalidates everything
             for (int i = 0; i < 8; i++)
                 ts.eights[i].dirty = true;
-            // if (xc7)
-            ts.halfs[0].dirty = true; // WCLK and CLK0 shared
+            if (!usp)
+                ts.halfs[0].dirty = true; // WCLK and CLK0 shared
         }
     }
     if ((((z & 0xF) == BEL_6LUT) || ((z & 0xF) == BEL_5LUT)) &&
@@ -242,8 +250,8 @@ void XilinxImpl::update_logic_bel(BelId bel, CellInfo *cell)
         // SRLs invalidate everything due to write clock
         for (int i = 0; i < 8; i++)
             ts.eights[i].dirty = true;
-        // if (xc7)
-        ts.halfs[0].dirty = true; // WCLK and CLK0 shared
+        if (!usp)
+            ts.halfs[0].dirty = true; // WCLK and CLK0 shared
     }
 
     ts.cells[z] = cell;
@@ -253,7 +261,7 @@ void XilinxImpl::update_logic_bel(BelId bel, CellInfo *cell)
     case BEL_FF:
     case BEL_FF2:
         ts.halfs[(z >> 4) / 4].dirty = true;
-        if ((((z >> 4) / 4) == 0) /*&& xc7*/)
+        if ((((z >> 4) / 4) == 0) && !usp)
             ts.eights[3].dirty = true;
     /* fall-through */
     case BEL_6LUT:
@@ -267,6 +275,14 @@ void XilinxImpl::update_logic_bel(BelId bel, CellInfo *cell)
     case BEL_F8MUX:
         ts.eights[(z >> 4) + 1].dirty = true;
         ts.eights[(z >> 4) + 2].dirty = true;
+        break;
+    case BEL_F9MUX:
+        ts.eights[3].dirty = true;
+        ts.eights[4].dirty = true;
+        break;
+    case BEL_CARRY8:
+        for (int i = 0; i < 8; i++)
+            ts.eights[i].dirty = true;
         break;
     case BEL_CARRY4:
         for (int i = ((z >> 4) / 4) * 4; i < (((z >> 4) / 4) + 1) * 4; i++)
@@ -626,7 +642,7 @@ void XilinxImpl::assign_cell_tags()
             ct.lut.only_drives_carry = false;
             if (ci->cluster != ClusterId() && ct.lut.output_count > 0 && ct.lut.output_sigs[0] != nullptr &&
                 ct.lut.output_sigs[0]->users.entries() == 1 &&
-                (*ct.lut.output_sigs[0]->users.begin()).cell->type == id_CARRY4)
+                (*ct.lut.output_sigs[0]->users.begin()).cell->type == (usp ? id_CARRY8 : id_CARRY4))
                 ct.lut.only_drives_carry = true;
 
             const IdString addr_msb_sigs[] = {id_WA7, id_WA8, id_WA9};
@@ -635,7 +651,7 @@ void XilinxImpl::assign_cell_tags()
 
         } else if (ci->type == id_SLICE_FFX) {
             ct.ff.d = ci->getPort(id_D);
-            ct.ff.clk = ci->getPort(id_CK);
+            ct.ff.clk = ci->getPort(usp ? id_CLK : id_CK);
             ct.ff.ce = ci->getPort(id_CE);
             ct.ff.sr = ci->getPort(id_SR);
             ct.ff.is_clkinv = bool_or_default(ci->params, id_IS_CLK_INVERTED, false);
@@ -872,7 +888,11 @@ namespace {
 struct XilinxArch : HimbaechelArch
 {
     XilinxArch() : HimbaechelArch("xilinx") {};
-    bool match_device(const std::string &device) override { return device.size() > 3 && device.substr(0, 3) == "xc7"; }
+    bool match_device(const std::string &device) override
+    {
+        return device.size() > 3 && (device.substr(0, 3) == "xc7" || device.substr(0, 3) == "xck" ||
+                                     device.substr(0, 4) == "xczu");
+    }
     std::unique_ptr<HimbaechelAPI> create(const std::string &device) override { return std::make_unique<XilinxImpl>(); }
 } xilinxArch;
 } // namespace

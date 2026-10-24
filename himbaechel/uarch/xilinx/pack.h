@@ -217,5 +217,26 @@ struct XC7Packer : public XilinxPacker
     void check_valid_pad(CellInfo *ci, std::string type);
 };
 
+struct USPacker : public XilinxPacker
+{
+    USPacker(Context *ctx, XilinxImpl *uarch) : XilinxPacker(ctx, uarch) {};
+
+    // IO
+    CellInfo *insert_ibufctrl(IdString name, NetInfo *i, NetInfo *o);
+    CellInfo *insert_inbuf(IdString name, NetInfo *pad, NetInfo *o);
+    void decompose_iob(CellInfo *xil_iob, const std::string &iostandard);
+    void pack_io();
+
+    // Clocking
+    void prepare_clocking();
+    void pack_gbs();
+    void preplace_clocking();
+    void pack_clocking();
+
+    // Families of cell not yet ported to UltraScale+; error out rather than
+    // mis-pack them.
+    void check_unsupported();
+};
+
 NEXTPNR_NAMESPACE_END
 #endif

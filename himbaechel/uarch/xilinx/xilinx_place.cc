@@ -40,6 +40,275 @@ NEXTPNR_NAMESPACE_BEGIN
 #define DBG()
 #endif
 
+// UltraScale+ CLE validity, ported from nextpnr-xilinx's
+// Arch::xcu_logic_tile_valid. One SLICE per tile with eight LUT/FF "eighths"
+// (A-H); z is eighth << 4 | LogicBelTypeZ, and the single CARRY8 sits at
+// z = BEL_CARRY8.
+bool XilinxImpl::xcu_logic_tile_valid(IdString tile_type, const LogicTileStatus &lts) const
+{
+    bool is_slicem = (tile_type == id_CLEM) || (tile_type == id_CLEM_R);
+    bool tile_is_memory = false;
+    if (lts.cells[(7 << 4) | BEL_6LUT] != nullptr && get_tags(lts.cells[(7 << 4) | BEL_6LUT])->lut.is_memory)
+        tile_is_memory = true;
+    bool small_memory = false;
+    if (lts.cells[(7 << 4) | BEL_5LUT] != nullptr && get_tags(lts.cells[(7 << 4) | BEL_5LUT])->lut.is_memory)
+        small_memory = true;
+    // Check eight-tiles (mostly LUT-related validity)
+    for (int i = 0; i < 8; i++) {
+        if (lts.eights[i].dirty) {
+            lts.eights[i].dirty = false;
+            lts.eights[i].valid = false;
+
+            CellInfo *lut6_cell = lts.cells[(i << 4) | BEL_6LUT];
+            CellInfo *lut5_cell = lts.cells[(i << 4) | BEL_5LUT];
+            auto lut6 = get_tags(lut6_cell);
+            auto lut5 = get_tags(lut5_cell);
+
+            // Check 6LUT
+            if (lut6) {
+                if (!is_slicem && (lut6->lut.is_memory || lut6->lut.is_srl)) {
+                    DBG();
+                    return false; // Memory and SRLs only valid in SLICEMs
+                }
+                if (lut5) {
+                    // Can't mix memory and non-memory
+                    if (lut6->lut.is_memory != lut5->lut.is_memory || lut6->lut.is_srl != lut5->lut.is_srl) {
+                        DBG();
+                        return false;
+                    }
+                    // If all 6 inputs or 2 outputs are used, 5LUT can't also be present
+                    if (lut6->lut.input_count == 6 || lut6->lut.output_count == 2) {
+                        DBG();
+                        return false;
+                    }
+                    // If more than 5 total inputs are used, need to check number of shared input
+                    if ((lut6->lut.input_count + lut5->lut.input_count) > 5) {
+                        int shared = 0, need_shared = (lut6->lut.input_count + lut5->lut.input_count - 5);
+                        for (int j = 0; j < lut6->lut.input_count; j++) {
+                            for (int k = 0; k < lut5->lut.input_count; k++) {
+                                if (lut6->lut.input_sigs[j] == lut5->lut.input_sigs[k])
+                                    shared++;
+                                if (shared >= need_shared)
+                                    break;
+                            }
+                        }
+                        if (shared < need_shared) {
+                            DBG();
+                            return false;
+                        }
+                    }
+                }
+            }
+            if (lut5) {
+                if (!is_slicem && (lut5->lut.is_memory || lut5->lut.is_srl)) {
+                    DBG();
+                    return false; // Memory and SRLs only valid in SLICEMs
+                }
+                // 5LUT can use at most 5 inputs and 1 output
+                if (lut5->lut.input_count > 5 || lut5->lut.output_count == 2) {
+                    DBG();
+                    return false;
+                }
+            }
+
+            // Check (over)usage of DI and X inputs
+            NetInfo *i_net = nullptr, *x_net = nullptr;
+            if (lut6) {
+                i_net = lut6->lut.di1_net;
+                x_net = lut6->lut.di2_net;
+            }
+            if (lut5) {
+                if (lut5->lut.di1_net != nullptr) {
+                    if (i_net == nullptr)
+                        i_net = lut5->lut.di1_net;
+                    else if (i_net != lut5->lut.di1_net) {
+                        DBG();
+                        return false;
+                    }
+                }
+                // DI2 not available for 5LUT
+                if (lut5->lut.di2_net != nullptr) {
+                    DBG();
+                    return false;
+                }
+            }
+
+            CellInfo *mux_cell = nullptr;
+            // Eights A, C, E, G: F7MUX uses X input
+            if (i == 0 || i == 2 || i == 4 || i == 6)
+                mux_cell = lts.cells[i << 4 | BEL_F7MUX];
+            // Eights B, F: F8MUX uses X input
+            if (i == 1 || i == 5)
+                mux_cell = lts.cells[(i - 1) << 4 | BEL_F8MUX];
+            // Eights D: F9MUX uses X input
+            if (i == 3)
+                mux_cell = lts.cells[BEL_F9MUX];
+            auto mux = get_tags(mux_cell);
+            if (mux) {
+                if (x_net == nullptr)
+                    x_net = mux->mux.sel;
+                else if (x_net != mux->mux.sel) {
+                    DBG();
+                    return false; // conflict between existing X use and mux select
+                }
+            }
+
+            CellInfo *out_fmux_cell = nullptr;
+            // Eights B, D, F, H: F7MUX connects to F7F8 out
+            if (i == 1 || i == 3 || i == 5 || i == 7)
+                out_fmux_cell = lts.cells[(i - 1) << 4 | BEL_F7MUX];
+            // Eights C, G: F8MUX connects to F7F8 out
+            if (i == 2 || i == 6)
+                out_fmux_cell = lts.cells[(i - 2) << 4 | BEL_F8MUX];
+            // Eights E: F9MUX connects to F7F8 out
+            if (i == 4)
+                out_fmux_cell = lts.cells[BEL_F9MUX];
+            auto out_fmux = get_tags(out_fmux_cell);
+
+            auto carry8 = get_tags(lts.cells[BEL_CARRY8]);
+            // CARRY8 might use X
+            if (carry8 && carry8->carry.x_sigs[i] != nullptr) {
+                if (x_net == nullptr)
+                    x_net = carry8->carry.x_sigs[i];
+                else if (x_net != carry8->carry.x_sigs[i]) {
+                    DBG();
+                    return false;
+                }
+            }
+
+            // FF1 might use X, if it isn't driven directly
+            auto ff1 = get_tags(lts.cells[i << 4 | BEL_FF]);
+            if (ff1 && ff1->ff.d != nullptr && ff1->ff.d->driver.cell != nullptr) {
+                auto &drv = ff1->ff.d->driver;
+                if ((drv.cell == lut6_cell && drv.port != id_MC31) || drv.cell == lut5_cell ||
+                    drv.cell == out_fmux_cell) {
+                    // Direct, OK
+                    // FIXME: CARRY8 direct
+                } else {
+                    // Indirect, must use X input
+                    if (x_net == nullptr)
+                        x_net = ff1->ff.d;
+                    else if (x_net != ff1->ff.d) {
+                        DBG();
+                        return false;
+                    }
+                }
+            }
+
+            // FF2 might use I, if it isn't driven directly
+            auto ff2 = get_tags(lts.cells[i << 4 | BEL_FF2]);
+            if (ff2 && ff2->ff.d != nullptr && ff2->ff.d->driver.cell != nullptr) {
+                auto &drv = ff2->ff.d->driver;
+                if ((drv.cell == lut6_cell && drv.port != id_MC31) || drv.cell == lut5_cell ||
+                    drv.cell == out_fmux_cell) {
+                    // Direct, OK
+                    // FIXME: CARRY8 direct
+                } else {
+                    // Indirect, must use I input
+                    if (i_net == nullptr)
+                        i_net = ff2->ff.d;
+                    else if (i_net != ff2->ff.d) {
+                        DBG();
+                        return false;
+                    }
+                }
+            }
+
+            // Collision with top address bits
+            if (tile_is_memory && !small_memory) {
+                auto top_lut = get_tags(lts.cells[(7 << 4) | BEL_6LUT]);
+                if (top_lut) {
+                    if ((i == 6) && x_net != top_lut->lut.address_msb[0])
+                        return false;
+                    if ((i == 5) && x_net != top_lut->lut.address_msb[1])
+                        return false;
+                    if ((i == 3) && x_net != top_lut->lut.address_msb[2])
+                        return false;
+                }
+            }
+
+            bool mux_output_used = false;
+            NetInfo *out5 = nullptr;
+            if (lut6 && lut6->lut.output_count == 2)
+                out5 = lut6->lut.output_sigs[1];
+            else if (lut5 && !lut5->lut.only_drives_carry)
+                out5 = lut5->lut.output_sigs[0];
+            if (out5 != nullptr && (out5->users.entries() > 1 ||
+                                    ((!ff1 || out5 != ff1->ff.d) && (!ff2 || out5 != ff2->ff.d)))) {
+                mux_output_used = true;
+            }
+
+            if (carry8 && carry8->carry.out_sigs[i] != nullptr) {
+                // FIXME: direct connections to FF
+                if (mux_output_used) {
+                    DBG();
+                    return false;
+                }
+                mux_output_used = true;
+            }
+            if (out_fmux) {
+                NetInfo *f7f8 = out_fmux->mux.out;
+                if (f7f8 != nullptr && (f7f8->users.entries() > 1 ||
+                                        ((!ff1 || f7f8 != ff1->ff.d) && (!ff2 || f7f8 != ff2->ff.d)))) {
+                    if (mux_output_used) {
+                        DBG();
+                        return false;
+                    }
+                    mux_output_used = true;
+                }
+            }
+
+            lts.eights[i].valid = true;
+        } else if (!lts.eights[i].valid) {
+            return false;
+        }
+    }
+    // Check half-tiles: eighths A-D and E-H each share a clock, set/reset and
+    // the two clock enables.
+    for (int i = 0; i < 2; i++) {
+        if (lts.halfs[i].dirty) {
+            lts.halfs[i].dirty = false;
+            lts.halfs[i].valid = false;
+            bool found_ff[2] = {false, false};
+            NetInfo *clk = nullptr, *sr = nullptr, *ce[2] = {nullptr};
+            bool clkinv = false, srinv = false, islatch = false;
+            for (int z = 4 * i; z < 4 * (i + 1); z++) {
+                for (int k = 0; k < 2; k++) {
+                    auto ff = get_tags(lts.cells[z << 4 | (BEL_FF + k)]);
+                    if (!ff)
+                        continue;
+                    if (found_ff[0] || found_ff[1]) {
+                        if (ff->ff.clk != clk || ff->ff.sr != sr || ff->ff.is_clkinv != clkinv ||
+                            ff->ff.is_srinv != srinv || ff->ff.is_latch != islatch) {
+                            DBG();
+                            return false;
+                        }
+                    } else {
+                        clk = ff->ff.clk;
+                        sr = ff->ff.sr;
+                        clkinv = ff->ff.is_clkinv;
+                        srinv = ff->ff.is_srinv;
+                        islatch = ff->ff.is_latch;
+                    }
+                    if (found_ff[k]) {
+                        if (ff->ff.ce != ce[k]) {
+                            DBG();
+                            return false;
+                        }
+                    } else {
+                        ce[k] = ff->ff.ce;
+                    }
+                    found_ff[k] = true;
+                }
+            }
+            lts.halfs[i].valid = true;
+        } else if (!lts.halfs[i].valid) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool XilinxImpl::xc7_logic_tile_valid(IdString tile_type, const LogicTileStatus &lts) const
 {
     bool is_slicem = (tile_type == id_CLBLM_L) || (tile_type == id_CLBLM_R);
@@ -357,6 +626,8 @@ bool XilinxImpl::isBelLocationValid(BelId bel, bool explain_invalid) const
     if (is_logic_tile(bel)) {
         if (!tile_status.at(bel.tile).lts)
             return true;
+        if (usp)
+            return xcu_logic_tile_valid(bel_tile_type(bel), *tile_status.at(bel.tile).lts);
         return xc7_logic_tile_valid(bel_tile_type(bel), *tile_status.at(bel.tile).lts);
     } else if (is_bram_tile(bel)) {
         const auto &bts = tile_status.at(bel.tile).bts;

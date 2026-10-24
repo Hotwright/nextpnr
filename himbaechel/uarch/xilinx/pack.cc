@@ -183,26 +183,28 @@ void XilinxPacker::pack_luts()
 void XilinxPacker::pack_ffs()
 {
     log_info("Packing flipflops..\n");
+    // The SLICE FF clock pin is CK on Series-7 and CLK on UltraScale+.
+    const IdString ff_clk = uarch->usp ? id_CLK : id_CK;
 
     dict<IdString, XFormRule> ff_rules;
     ff_rules[id_FDCE].new_type = id_SLICE_FFX;
-    ff_rules[id_FDCE].port_xform[id_C] = id_CK;
+    ff_rules[id_FDCE].port_xform[id_C] = ff_clk;
     ff_rules[id_FDCE].port_xform[id_CLR] = id_SR;
     // ff_rules[id_FDCE].param_xform[id_IS_CLR_INVERTED] = id_IS_SR_INVERTED;
 
     ff_rules[id_FDPE].new_type = id_SLICE_FFX;
-    ff_rules[id_FDPE].port_xform[id_C] = id_CK;
+    ff_rules[id_FDPE].port_xform[id_C] = ff_clk;
     ff_rules[id_FDPE].port_xform[id_PRE] = id_SR;
     // ff_rules[id_FDPE].param_xform[id_IS_PRE_INVERTED] = id_IS_SR_INVERTED;
 
     ff_rules[id_FDRE].new_type = id_SLICE_FFX;
-    ff_rules[id_FDRE].port_xform[id_C] = id_CK;
+    ff_rules[id_FDRE].port_xform[id_C] = ff_clk;
     ff_rules[id_FDRE].port_xform[id_R] = id_SR;
     ff_rules[id_FDRE].set_attrs.emplace_back(id_X_FFSYNC, "1");
     // ff_rules[id_FDRE].param_xform[id_IS_R_INVERTED] = id_IS_SR_INVERTED;
 
     ff_rules[id_FDSE].new_type = id_SLICE_FFX;
-    ff_rules[id_FDSE].port_xform[id_C] = id_CK;
+    ff_rules[id_FDSE].port_xform[id_C] = ff_clk;
     ff_rules[id_FDSE].port_xform[id_S] = id_SR;
     ff_rules[id_FDSE].set_attrs.emplace_back(id_X_FFSYNC, "1");
     // ff_rules[id_FDSE].param_xform[id_IS_S_INVERTED] = id_IS_SR_INVERTED;
@@ -239,7 +241,7 @@ bool XilinxPacker::can_add_ff_to_cluster(const CellInfo *lut, const CellInfo *ff
         }
         if (cell->type == id_SLICE_FFX) {
             found_ff = true;
-            clk = cell->getPort(id_CK);
+            clk = cell->getPort(uarch->usp ? id_CLK : id_CK);
             ce = cell->getPort(id_CE);
             sr = cell->getPort(id_SR);
             is_clkinv = bool_or_default(cell->params, id_IS_CLK_INVERTED, false);
@@ -258,7 +260,7 @@ bool XilinxPacker::can_add_ff_to_cluster(const CellInfo *lut, const CellInfo *ff
 
     if (!found_wclk && !found_ff)
         return true;
-    if (ff->getPort(id_CK) != clk)
+    if (ff->getPort(uarch->usp ? id_CLK : id_CK) != clk)
         return false;
     if (!found_ff)
         return true;
@@ -439,7 +441,9 @@ void XilinxPacker::pack_muxfs()
         CellInfo *ci = cell.second.get();
         ci->attrs.erase(id_MUX_TREE_ROOT);
         if (ci->type == id_MUXF9) {
-            log_error("MUXF9 is not supported on xc7!\n");
+            if (!uarch->usp)
+                log_error("MUXF9 is not supported on xc7!\n");
+            mux_roots.push_back(ci);
         } else if (ci->type == id_MUXF8) {
             NetInfo *o = ci->getPort(id_O);
             if (o == nullptr || o->users.entries() != 1 || (*o->users.begin()).cell->type != id_MUXF9 ||
@@ -471,9 +475,9 @@ void XilinxPacker::finalise_muxfs()
     muxf_rules[id_MUXF9].port_xform[id_I1] = id_1;
     muxf_rules[id_MUXF9].port_xform[id_S] = id_S0;
     muxf_rules[id_MUXF9].port_xform[id_O] = id_OUT;
-    muxf_rules[id_MUXF8].new_type = id_SELMUX2_1;
+    muxf_rules[id_MUXF8].new_type = uarch->usp ? id_F8MUX : id_SELMUX2_1;
     muxf_rules[id_MUXF8].port_xform = muxf_rules[id_MUXF9].port_xform;
-    muxf_rules[id_MUXF7].new_type = id_SELMUX2_1;
+    muxf_rules[id_MUXF7].new_type = uarch->usp ? id_F7MUX : id_SELMUX2_1;
     muxf_rules[id_MUXF7].port_xform = muxf_rules[id_MUXF9].port_xform;
     generic_xform(muxf_rules, true);
 }
@@ -823,6 +827,25 @@ void XilinxImpl::pack()
     const ArchArgs &args = ctx->args;
     if (args.options.count("xdc")) {
         parse_xdc(args.options["xdc"].as<std::string>());
+    }
+
+    if (usp) {
+        USPacker packer(ctx, this);
+        packer.check_unsupported();
+        packer.pack_constants();
+        packer.pack_inverters();
+        packer.pack_io();
+        packer.prepare_clocking();
+        packer.pack_constants();
+        packer.pack_clocking();
+        packer.generate_constraints();
+        packer.pack_muxfs();
+        packer.pack_luts();
+        packer.pack_dram();
+        packer.pack_ffs();
+        packer.finalise_muxfs();
+        packer.pack_lutffs();
+        return;
     }
 
     XC7Packer packer(ctx, this);

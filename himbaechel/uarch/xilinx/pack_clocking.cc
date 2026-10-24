@@ -259,6 +259,9 @@ void XilinxImpl::route_clocks()
                          sink_wire_name);
             }
 
+            if (sink_wire == WireId())
+                log_error("clock '%s' sink %s.%s has no bel pin wire\n", ctx->nameOf(clk_net), ctx->nameOf(usr.cell),
+                          usr.port.c_str(ctx));
             visit.push(sink_wire);
             while (!visit.empty()) {
                 WireId curr = visit.front();

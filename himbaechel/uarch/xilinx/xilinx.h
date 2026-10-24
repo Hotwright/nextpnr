@@ -80,6 +80,10 @@ struct SiteIndex
 
 struct XilinxImpl : HimbaechelAPI
 {
+    // UltraScale+ (xck*/xczu*) rather than Series-7. Set by init_database from
+    // the part name; everything family-specific branches on it.
+    bool usp = false;
+
 
     struct LogicTileStatus
     {
@@ -122,6 +126,7 @@ struct XilinxImpl : HimbaechelAPI
 
     bool isBelLocationValid(BelId bel, bool explain_invalid = false) const override;
     bool xc7_logic_tile_valid(IdString tileType, const LogicTileStatus &lts) const;
+    bool xcu_logic_tile_valid(IdString tileType, const LogicTileStatus &lts) const;
 
     // Pips
     bool is_pip_unavail(PipId pip) const;
