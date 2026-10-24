@@ -103,9 +103,15 @@ def timing_pip_classs(pip: xilinx_device.PIP):
 seen_pip_timings = set()
 seen_node_timings = set()
 
+# Tile that carries the PSEUDO_GND/PSEUDO_VCC bels. (0, 0) is a NULL tile on
+# every 7-series part; on the K26 it is PSS_ALTO_TERM_T, so main() picks the
+# first NULL tile instead. The bels are placed like any global bel, so only
+# the tile type matters, not where it is.
+CONST_CORNER = (0, 0)
+
 def import_tiletype(ch: Chip, tile: xilinx_device.Tile):
     tile_type = tile.tile_type()
-    if tile.x == 0 and tile.y == 0:
+    if (tile.x, tile.y) == CONST_CORNER:
         assert tile_type == "NULL"
         tile_type = "NULL_CORNER"
     tt = ch.create_tile_type(tile_type)
@@ -188,7 +194,9 @@ def import_tiletype(ch: Chip, tile: xilinx_device.Tile):
                     if s.rel_xy()[0] == 1:
                         rt_config |= (4 << 8)
                     rt_config |= ((i - 1) << 1)
-                    add_pip(pin.tile_wire().name(), s.pin(f"{swn[0]}").tile_wire().name(),
+                    # LUT output site pin: "A" on 7-series, "A_O" on UltraScale+
+                    lut_out = f"{swn[0]}_O" if filters.USP else f"{swn[0]}"
+                    add_pip(pin.tile_wire().name(), s.pin(lut_out).tile_wire().name(),
                             pip_class=PipClass.LUT_ROUTETHRU,
                             pip_config=rt_config,
                             site_key=(s.index << 8),
@@ -360,12 +368,16 @@ def main():
     xlbase = path.join(path.dirname(path.realpath(__file__)), "..")
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--xray", help="Project X-Ray device database path for current family (e.g. ../prjxray-db/artix7)", type=str, required=True)
+    parser.add_argument("--xray", help="Project X-Ray device database path for current family (e.g. ../prjxray-db/artix7)", type=str, default="")
     parser.add_argument("--metadata", help="nextpnr-xilinx site metadata root", type=str, default=path.join(xlbase, "meta", "artix7"))
     parser.add_argument("--device", help="name of device to export", type=str, required=True)
     parser.add_argument("--constids", help="name of nextpnr constids file to read", type=str, default=path.join(xlbase, "constids.inc"))
     parser.add_argument("--bba", help="bba file to write", type=str, required=True)
+    parser.add_argument("--usp-db", help="UltraScale+: directory written by rapidwright/UspDump.java "
+        "(replaces --xray/--metadata; nodes come from <fabric>/nodes.bin)", type=str, default=None)
     args = parser.parse_args()
+    usp = args.usp_db is not None
+    filters.USP = usp
 
     # Init database paths
     metadata_root = args.metadata
@@ -379,16 +391,22 @@ def main():
     if "xc7s" in args.device:
         metadata_root = metadata_root.replace("artix7", "spartan7")
         xraydb_root = xraydb_root.replace("artix7", "spartan7")
+    if usp:
+        xraydb_root = args.usp_db
+        metadata_root = path.join(args.usp_db, "meta")
     # Load prjxray device data
-    d = xilinx_device.import_device(args.device, xraydb_root, metadata_root)
+    d = xilinx_device.import_device(args.device, xraydb_root, metadata_root, exact_nodes=usp)
     # Init constant ids
     ch = Chip("xilinx", args.device, d.width, d.height)
     ch.strs.read_constids(path.join(path.dirname(__file__), args.constids))
     ch.set_speed_grades(["DEFAULT", ]) # TODO: figure out how speed grades are supposed to work in prjxray
+    global CONST_CORNER
+    if usp:
+        CONST_CORNER = min(((t.y, t.x) for t in d.tiles if t.tile_type() == "NULL"))[::-1]
     # Import tile types
     for tile in d.tiles:
         tile_type = tile.tile_type()
-        if tile.x == 0 and tile.y == 0:
+        if (tile.x, tile.y) == CONST_CORNER:
             assert tile_type == "NULL"
             # location for pseudo gnd/vcc bels
             tile_type = "NULL_CORNER"
@@ -406,6 +424,31 @@ def main():
                 variants=[ch.strs.id(v) for v in site.available_variants()]
             ))
     # Import nodes
+    if usp:
+        import_usp_nodes(ch, d, path.join(xraydb_root, args.device, "nodes.bin"))
+    else:
+        import_tileconn_nodes(ch, d)
+    import_timings(ch, xraydb_root, usp)
+    import_packages(ch, d)
+    ch.write_bba(args.bba)
+
+def import_usp_nodes(ch: Chip, d, nodes_path):
+    # The dump already holds exact nodes, in used-wire indices, with nodes of
+    # fewer than two used wires dropped -- the same pruning the tileconn path
+    # below applies. Interconnect wires go first, as there, for nextpnr's
+    # delay estimates.
+    print("Processing nodes (exact, from RapidWright)...")
+    with open(nodes_path, "rb") as f:
+        count, = struct.unpack("<I", f.read(4))
+        for _ in range(count):
+            n, = struct.unpack("<I", f.read(4))
+            raw = f.read(8 * n)
+            ws = [struct.unpack_from("<HHI", raw, 8 * i) for i in range(n)]
+            ws.sort(key=lambda w: 0 if d.tiles_by_xy[w[0], w[1]].tile_type() == "INT" else 1)
+            ch.add_node([NodeWire(x, y, i) for x, y, i in ws], timing_class="node_c0_c0")
+    ch.timing.set_node_class("DEFAULT", "node_c0_c0", delay=TimingValue(0), cap=TimingValue(0), res=TimingValue(0))
+
+def import_tileconn_nodes(ch: Chip, d):
     seen_nodes = set()
     tt_used_wires = {}
     print("Processing nodes...")
@@ -444,6 +487,8 @@ def main():
                             seen_node_timings.add(timing_class)
                     del node_wires
                 seen_nodes.add(uid)
+
+def import_timings(ch: Chip, xraydb_root, usp):
     # Stub timing class
     ch.timing.set_pip_class("DEFAULT", "SITE_NULL", delay=TimingValue(20))
     # Stub bel timings
@@ -456,10 +501,13 @@ def main():
     lut.add_setup_hold("CLK", "WE", ClockEdge.RISING, TimingValue(100, 600), TimingValue(100, 100))
     lut.add_setup_hold("CLK", "DI1", ClockEdge.RISING, TimingValue(100, 100), TimingValue(100, 100))
     ff = ch.timing.add_cell_variant("DEFAULT", "SLICE_FFX")
-    ff.add_setup_hold("CK", "CE", ClockEdge.RISING, TimingValue(100, 100), TimingValue(0, 0))
-    ff.add_setup_hold("CK", "SR", ClockEdge.RISING, TimingValue(100, 100), TimingValue(0, 0))
-    ff.add_setup_hold("CK", "D", ClockEdge.RISING, TimingValue(100, 100), TimingValue(200, 200))
-    ff.add_clock_out("CK", "Q", ClockEdge.RISING, TimingValue(300, 350))
+    ck = "CLK" if usp else "CK" # UltraScale+ FF clock pin is CLK
+    ff.add_setup_hold(ck, "CE", ClockEdge.RISING, TimingValue(100, 100), TimingValue(0, 0))
+    ff.add_setup_hold(ck, "SR", ClockEdge.RISING, TimingValue(100, 100), TimingValue(0, 0))
+    ff.add_setup_hold(ck, "D", ClockEdge.RISING, TimingValue(100, 100), TimingValue(200, 200))
+    ff.add_clock_out(ck, "Q", ClockEdge.RISING, TimingValue(300, 350))
+    if usp:
+        return # no SDF for UltraScale+ yet: stub timing only
 
     # Load SDF for carry and mux
     timings_root = xraydb_root
@@ -473,6 +521,7 @@ def main():
 
     import_bram_timings(ch.timing, parse_sdf.parse_sdf_file(path.join(timings_root, "timings", "BRAM_L.sdf")))
 
+def import_packages(ch: Chip, d):
     # Import package pins
     for package_name, package in sorted(d.packages.items(), key=lambda x:x[0]):
         pkg = ch.create_package(package_name)
@@ -483,7 +532,6 @@ def main():
             pkg.create_pad(pin, f"X{site_data.tile.x}Y{site_data.tile.y}",
             f"{site_data.rel_name()}.{bel_name}",
             "", 0) # TODO: bank
-    ch.write_bba(args.bba)
 
 if __name__ == '__main__':
     main()

@@ -352,7 +352,9 @@ class Device:
     def site(self, name):
         return self.sites_by_name[name]
 
-def import_device(fabricname, prjxray_root, metadata_root):
+def import_device(fabricname, prjxray_root, metadata_root, exact_nodes=False):
+    # exact_nodes: the caller streams nodes itself (UltraScale+, from the
+    # RapidWright dump's nodes.bin), so there is no tileconn.json to apply.
     site_type_cache = {}
     tile_type_cache = {}
     tile_json_cache = {}
@@ -535,8 +537,9 @@ def import_device(fabricname, prjxray_root, metadata_root):
                     continue # header
                 pkg.pin_map[sl[0]] = sl[2]
             d.packages[package_name] = pkg
-    with open(prjxray_root + "/" + fabricname + "/tileconn.json", "r") as tcf:
-        apply_tileconn(tcf, d)
+    if not exact_nodes:
+        with open(prjxray_root + "/" + fabricname + "/tileconn.json", "r") as tcf:
+            apply_tileconn(tcf, d)
     return d
 
 if __name__ == '__main__':

@@ -1,6 +1,44 @@
 # Mapping rules from prjxray to nextpnr
 
+# Set by xilinx_gen.py for an UltraScale+ device. The z encodings below must
+# match legacy nextpnr-xilinx's bbaexport.getBelZoverride() bit for bit: the
+# placer validity check and FASM writers ported from it index bels by z.
+USP = False
+
+def get_bel_z_override_usp(bel, default_z):
+    s = bel.site
+    t = s.tile
+    bt = bel.bel_type()
+    bn = bel.name()
+    if t.tile_type() == "BRAM":
+        return {"RAMBFIFO36E2_RAMBFIFO36E2": 0, "RAMB36E2_RAMB36E2": 1, "FIFO36E2_FIFO36E2": 2,
+                "RAMB18E2_U_RAMB18E2": 5, "RAMBFIFO18E2_RAMBFIFO18E2": 8, "RAMB18E2_L_RAMB18E2": 9,
+                "FIFO18E2_FIFO18E2": 10}.get(bt, default_z)
+    if t.tile_type() == "DSP":
+        is_upper_site = any(o.grid_xy[1] < s.grid_xy[1] for o in t.sites())
+        zs = (1 << 5) if is_upper_site else 0
+        order = ["DSP_PREADD_DATA", "DSP_PREADD", "DSP_A_B_DATA", "DSP_MULTIPLIER",
+                 "DSP_C_DATA", "DSP_M_DATA", "DSP_ALU", "DSP_OUTPUT"]
+        return (zs | order.index(bt)) if bt in order else -1
+    if s.site_type() in ("SLICEL", "SLICEM"):
+        # z[6..4] = eighth (A-H), z[3..0] = type, as LogicBelTypeZ
+        subslices = "ABCDEFGH"
+        for i, pf in enumerate(["6LUT", "5LUT", "FF", "FF2"]):
+            if len(bn) == len(pf) + 1 and bn[1:] == pf:
+                return (subslices.index(bn[0]) << 4) | i
+        if bn.startswith("FFMUX"):
+            return (subslices.index(bn[5]) << 4) | (5 if bn[6] == "2" else 4)
+        if bn.startswith("OUTMUX"):
+            return (subslices.index(bn[6]) << 4) | 6
+        return {"F7MUX_AB": 0x07, "F7MUX_CD": 0x27, "F7MUX_EF": 0x47, "F7MUX_GH": 0x67,
+                "F8MUX_BOT": 0x08, "F8MUX_TOP": 0x48, "F9MUX": 0x09, "CARRY8": 0x0A,
+                "CLK1INV": 0x0B, "CLK2INV": 0x4B, "LCLKINV": 0x1B,
+                "RST_ABCDINV": 0x0C, "RST_EFGHINV": 0x4C, "HARD0": 0x0D}.get(bn, -1)
+    return default_z
+
 def get_bel_z_override(bel, default_z):
+    if USP:
+        return get_bel_z_override_usp(bel, default_z)
     s = bel.site
     t = s.tile
     bt = bel.bel_type()
@@ -48,6 +86,10 @@ def get_bel_type_override(bt):
     elif bt == "FF_INIT" or bt == "REG_INIT":
         return "SLICE_FFX"
 
+    if USP:
+        for p in ("_PAD_", "_PULL_", "_IBUFCTRL_", "_INBUF_", "_OUTBUF_"):
+            if p in bt:
+                return "IOB_" + p.replace("_", "")
     iolParts = ["COMBUF_", "IDDR_", "IPFF_", "OPFF_", "OPTFF_", "TFF_"]
     for p in iolParts:
         if bt.startswith(p):
