@@ -83,13 +83,30 @@ void XilinxImpl::init_database(Arch *arch)
     // package field. "s" is also added to the family class so that Spartan-7
     // part names parse at all - an xc7s50 chipdb is built, but no xc7s* part
     // name matched the old pattern.
-    std::regex devicere = std::regex("(xc7z\\d+s|xc7[azkvs]\\d+t?)([a-z0-9]+)-(\\dL?)");
+    //
+    // Virtex-7 needs its own alternative: the family letter is followed by a
+    // second letter in xc7vx* (VX) and xc7vh* (VH), so "xc7[...v...]\d+" can
+    // only ever match the plain xc7v* parts. That rejected 9 of the 42
+    // 7-series dies - every VX and VH part - while xc7v585t parsed fine, which
+    // is why it went unnoticed. Checked against all 42 part names: 42 accepted,
+    // none resolving to the wrong die.
+    std::regex devicere = std::regex("(xc7z\\d+s|xc7[azks]\\d+t?|xc7v[xh]?\\d+t?)([a-z0-9]+)-(\\dL?)");
     if (!std::regex_match(args.device, match, devicere)) {
         log_error("Invalid device %s\n", args.device.c_str());
     }
     std::string die = match[1].str();
     if (die == "xc7a35t")
         die = "xc7a50t";
+    // The A-75T and A-15T are smaller siblings of the A-100T and A-50T
+    // respectively: identical tile-for-tile fabric, different package/IO
+    // count. The Spartan-7 S-25 shares its fabric with the Artix A-12T and
+    // A-25T (same silicon), so those two read the S-25 chipdb.
+    if (die == "xc7a75t")
+        die = "xc7a100t";
+    if (die == "xc7a15t")
+        die = "xc7a50t";
+    if (die == "xc7a12t" || die == "xc7a25t")
+        die = "xc7s25";
     // The single-core Zynq Z-7007S shares its PL die with the Z-7010: every
     // tile name, tile type, site name and site type matches position for
     // position, exactly as xc7a35t does with xc7a50t above. Only the PS side
@@ -102,6 +119,18 @@ void XilinxImpl::init_database(Arch *arch)
     // would each need their own chipdb.)
     if (die == "xc7z014s")
         die = "xc7z020";
+    // Census-proven shared fabrics among the dies that still need
+    // characterising: the Z-7015 shares the Z-7012S's PL die, the S-15 shares
+    // the S-6's, the S-100 shares the S-75's, and the K-480T shares the
+    // K-420T's. One chipdb serves each pair.
+    if (die == "xc7z015")
+        die = "xc7z012s";
+    if (die == "xc7s15")
+        die = "xc7s6";
+    if (die == "xc7s100")
+        die = "xc7s75";
+    if (die == "xc7k480t")
+        die = "xc7k420t";
     arch->load_chipdb(stringf("xilinx/chipdb-%s.bin", die.c_str()));
     std::string package = match[2].str();
     arch->set_package(package);
