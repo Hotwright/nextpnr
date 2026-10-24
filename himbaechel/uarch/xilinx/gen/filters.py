@@ -112,6 +112,22 @@ def get_bel_type_override(bt):
         return bt
 
 def include_pip(tile_type, p):
+    if USP:
+        # CLE tile-level route-thrus (A1 -> AMUX etc.) carry no LUT
+        # occupancy check and could run straight through a used LUT; the
+        # generator's own LUT route-thru pseudo-pips are the checked path.
+        if p.is_route_thru() and tile_type in ("CLEL_L", "CLEL_R", "CLEM", "CLEM_R"):
+            return False
+        if tile_type.startswith("HDIO_"):
+            # The differential-pair crossover: OP -> OUTINV (inverting) ->
+            # OUTB_B -> the partner's OUTB_B_IN -> its OUTMUX. Only a true
+            # differential output may use it; a single-ended one routed that
+            # way drives the wrong pad, inverted. Same blacklist as
+            # patches/nextpnr-xilinx-usp-router2-pip-avail.patch.
+            if p.dst_wire().name().endswith("_OUTB_B_IN_PIN"):
+                return False
+            if p.is_route_thru() and p.dst_wire().name().endswith("_OUTB_B"):
+                return False
     is_xc7_logic = (tile_type in ("CLBLL_L", "CLBLL_R", "CLBLM_L", "CLBLM_R"))
     if p.is_route_thru() and p.src_wire().name().endswith("_CE_INT"):
         return False

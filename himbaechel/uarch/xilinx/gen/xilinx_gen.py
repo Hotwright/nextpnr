@@ -277,8 +277,13 @@ def import_tiletype(ch: Chip, tile: xilinx_device.Tile):
             pip_config=1 if pip.is_route_thru() else 0)
         # TODO: extra data, route-through flag
         if pip.is_bidi():
+            # pip_config bit 1 marks the reverse copy of a bidirectional pip.
+            # prjuray names both directions by the canonical (src, dst) pair
+            # plus .FWD/.REV, so the FASM writer has to know which copy it
+            # has. Series-7 leaves the bit clear to keep its chipdbs as they
+            # were.
             add_pip(pip.dst_wire().name(), pip.src_wire().name(), pip_class=PipClass.TILE_ROUTING, timing=tcls,
-                pip_config=1 if pip.is_route_thru() else 0)
+                pip_config=(1 if pip.is_route_thru() else 0) | (2 if filters.USP else 0))
 
 def import_sdf_timings(variant, sdfcell):
     # TODO: anything other than comb
@@ -444,6 +449,9 @@ def import_usp_nodes(ch: Chip, d, nodes_path):
             n, = struct.unpack("<I", f.read(4))
             raw = f.read(8 * n)
             ws = [struct.unpack_from("<HHI", raw, 8 * i) for i in range(n)]
+            # The dump numbers a tile type's wires in JSON order;
+            # xilinx_device indexes them by name.
+            ws = [(x, y, d.tiles_by_xy[x, y].data.json_wire_index[i]) for x, y, i in ws]
             ws.sort(key=lambda w: 0 if d.tiles_by_xy[w[0], w[1]].tile_type() == "INT" else 1)
             ch.add_node([NodeWire(x, y, i) for x, y, i in ws], timing_class="node_c0_c0")
     ch.timing.set_node_class("DEFAULT", "node_c0_c0", delay=TimingValue(0), cap=TimingValue(0), res=TimingValue(0))

@@ -433,6 +433,9 @@ def import_device(fabricname, prjxray_root, metadata_root, exact_nodes=False):
                         wd.capacitance = float(wire_data["cap"])
                 td.wires.append(wd)
                 td.wires_by_name[wire] = wd
+            # Wires are indexed in name order here, but an exact node dump
+            # (gen/rapidwright) numbers them in the order the JSON lists them.
+            td.json_wire_index = [td.wires_by_name[w].index for w in tj["wires"]]
             for pip, pipdata in sorted(tj["pips"].items()):
                 # FIXME: pip/wire delays
                 pip_id = len(td.pips)
@@ -496,7 +499,17 @@ def import_device(fabricname, prjxray_root, metadata_root, exact_nodes=False):
         d.height = max(d.height, y + 1)
         tiletype = tiledata["type"]
         t = Tile(x, y, tile, get_tile_type_data(tiletype), (-1, -1), [])
-        for idx, (site, sitetype) in enumerate(sorted(tiledata["sites"].items())):
+        # A tile type's bels carry a site index taken from the first instance
+        # of that type, so the order has to agree between instances. Sorting
+        # names as strings does not: HDIO_BOT_RIGHT_X7Y0 holds IOB_X0Y0..Y11
+        # and puts Y10/Y11 between Y1 and Y2, while X7Y120 (Y104..Y115) is in
+        # numeric order - index 7 was a different IOB in each. Sort by prefix
+        # then coordinates. Series-7 keeps the string sort, so the existing
+        # chipdbs stay byte-identical.
+        site_items = sorted(tiledata["sites"].items())
+        if exact_nodes:
+            site_items.sort(key=lambda e: (e[0][0:e[0].rfind('_')], parse_xy(e[0])))
+        for idx, (site, sitetype) in enumerate(site_items):
                 si = Site(t, site, idx, parse_xy(site), get_site_type_data(sitetype))
                 t.site_insts.append(si)
                 d.sites_by_name[site] = si
