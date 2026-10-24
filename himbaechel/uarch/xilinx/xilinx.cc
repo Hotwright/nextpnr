@@ -318,8 +318,9 @@ bool XilinxImpl::is_pip_unavail(PipId pip) const
                 return true; // Ground driver only available if lowest 5LUT and 6LUT not used
         }
     } else if (pip_type == PIP_CONST_DRIVER) {
-        WireId dst = ctx->getPipDstWire(pip);
-        const auto &lts = tile_status[dst.tile].lts;
+        // The pip's own tile holds the LUT; its destination wire may be
+        // canonicalised to a node rooted elsewhere.
+        const auto &lts = tile_status[pip.tile].lts;
         if (lts && (lts->cells[BEL_5LUT] != nullptr || lts->cells[BEL_6LUT] != nullptr))
             return true; // Ground driver only available if lowest 5LUT and 6LUT not used
     } else if (pip_type == PIP_SITE_INTERNAL) {

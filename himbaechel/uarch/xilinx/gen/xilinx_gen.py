@@ -169,6 +169,15 @@ def import_tiletype(ch: Chip, tile: xilinx_device.Tile):
             #     # self.add_pseudo_pip(self.row_gnd_wire_index, self.sitewire_to_tilewire(pin.site_wire()),
             #     #    pip_type=NextpnrPipType.CONST_DRIVER)
             #     pass
+            if filters.USP and s.primary.site_type() in ("SLICEL", "SLICEM") and pn == "A_O":
+                # UltraScale+ has no general GND source in the INT tiles. As in
+                # nextpnr-xilinx's bbaexport, an unused A LUT supplies one: its
+                # INIT defaults to all-zero, so A_O is a constant 0.
+                # is_pip_unavail() withdraws this pip once AxLUT is occupied.
+                if not tt.has_wire("PSEUDO_GND_LUT"):
+                    tt.create_wire("PSEUDO_GND_LUT", "PSEUDO_GND", const_value="GND")
+                add_pip("PSEUDO_GND_LUT", pin.tile_wire().name(), pip_class=PipClass.CONST_DRIVER,
+                    site_key=(s.index << 8), timing="SITE_NULL")
             add_pip(lookup_site_wire(pin.site_wire()), pin.tile_wire().name(),
                 pip_class=PipClass.SITE_EXIT, timing="SITE_NULL")
         else:

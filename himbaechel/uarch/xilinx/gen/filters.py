@@ -118,6 +118,11 @@ def include_pip(tile_type, p):
         # generator's own LUT route-thru pseudo-pips are the checked path.
         if p.is_route_thru() and tile_type in ("CLEL_L", "CLEL_R", "CLEM", "CLEM_R"):
             return False
+        # The RCLK_INT GND_WIRE<n> sources: prjuray-db has no segbits for
+        # INT_RCLK_TO_CLK_*.GND_WIRE<n>, so a constant routed this way would
+        # assemble to nothing. Constants come from the INT tiles instead.
+        if tile_type.startswith("RCLK_INT_") and p.src_wire().name().startswith(("GND_WIRE", "VCC_WIRE")):
+            return False
         if tile_type.startswith("HDIO_"):
             # The differential-pair crossover: OP -> OUTINV (inverting) ->
             # OUTB_B -> the partner's OUTB_B_IN -> its OUTMUX. Only a true

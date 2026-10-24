@@ -752,7 +752,41 @@ void XilinxImpl::fixup_placement()
     }
     for (auto &cell : ctx->cells) {
         CellInfo *ci = cell.second.get();
-        if (ci->type == id_PS7_PS7) {
+        if (ci->type == id_PSS_ALTO_CORE) {
+            // UltraScale+ PS8, as nextpnr-xilinx does it: every unused PL->PS
+            // input is tied to a constant, a handful of active-low ones high.
+            log_info("Tieing unused PSS inputs to constants...\n");
+            for (IdString pname : ctx->getBelPins(ci->bel)) {
+                if (ci->ports.count(pname) && ci->ports.at(pname).net != nullptr &&
+                    ci->ports.at(pname).net->driver.cell != nullptr)
+                    continue;
+                if (ctx->getBelPinType(ci->bel, pname) == PORT_OUT)
+                    continue;
+                std::string name = pname.str(ctx);
+                if (name.find("_PAD_") != std::string::npos)
+                    continue;
+                if (name.find("PSVERSION") != std::string::npos || name.find("PSSGTS") != std::string::npos ||
+                    name == "PSSGPWRDWNB" || name == "PSSGHIGHB" || name == "PSSFSTCFGB" || name == "PSSCFGRESETB" ||
+                    name == "PCFGPORB" || name.find("IDCODE") != std::string::npos ||
+                    name.find("BSCAN") != std::string::npos)
+                    continue;
+                bool constval = false;
+                if (name == "NIRQ1LPDRPU" || name == "NIRQ0LPDRPU" || name == "NFIQ1LPDRPU" || name == "NFIQ0LPDRPU")
+                    constval = true;
+                if (boost::ends_with(name, "SSIN") || name == "EMIOSDIO1WP" || name == "EMIOSDIO0WP" ||
+                    boost::ends_with(name, "RSOP") || boost::ends_with(name, "REOP") ||
+                    boost::ends_with(name, "GMIITXCLK") || name == "DPVIDEOINCLK" || name == "DPSAXISAUDIOCLK")
+                    constval = true;
+                ci->ports[pname].name = pname;
+                ci->ports[pname].type = PORT_IN;
+                if (ci->ports[pname].net != nullptr) {
+                    ci->disconnectPort(pname);
+                    ci->attrs.erase(ctx->idf("X_ORIG_PORT_%s", name.c_str()));
+                }
+                ci->connectPort(pname,
+                                ctx->nets.at(constval ? ctx->id("$PACKER_VCC_NET") : ctx->id("$PACKER_GND_NET")).get());
+            }
+        } else if (ci->type == id_PS7_PS7) {
             log_info("Tieing unused PS7 inputs to constants...\n");
             for (IdString pname : ctx->getBelPins(ci->bel)) {
                 if (ci->ports.count(pname) && ci->ports.at(pname).net != nullptr &&

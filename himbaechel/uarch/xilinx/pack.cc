@@ -534,7 +534,7 @@ void XilinxPacker::pack_constants()
     if (tied_pins.empty())
         get_tied_pins(ctx, tied_pins);
     if (invertible_pins.empty())
-        get_invertible_pins(ctx, invertible_pins);
+        get_invertible_pins(ctx, invertible_pins, uarch->usp);
     if (!ctx->cells.count(ctx->id("$PACKER_GND_DRV"))) {
         CellInfo *gnd_cell = ctx->createCell(ctx->id("$PACKER_GND_DRV"), id_PSEUDO_GND);
         gnd_cell->addOutput(id_Y);

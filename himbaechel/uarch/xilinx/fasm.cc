@@ -295,6 +295,10 @@ struct FasmBackend
             if (!pp.empty())
                 last_was_blank = false;
         } else {
+            if (uarch->usp) {
+                write_pip_usp(pip, src.str(ctx), dst.str(ctx));
+                return;
+            }
             if (extra_data.pip_config & 1)
                 log_warning("Unprocessed route-thru %s.%s.%s\n!", tile_type.c_str(ctx), src.c_str(ctx), dst.c_str(ctx));
 
@@ -740,6 +744,12 @@ struct FasmBackend
             }
         }
         for (int tile : used_logic_tiles) {
+            if (uarch->usp) {
+                write_luts_config_usp(tile);
+                write_ffs_config_usp(tile);
+                blank();
+                continue;
+            }
             write_luts_config(tile, 0);
             write_luts_config(tile, 1);
             write_ffs_config(tile, 0);
@@ -1839,9 +1849,492 @@ struct FasmBackend
         }
     }
 
+
+    // ---------------------------------------------------------------------
+    // UltraScale+ (prjuray), ported from nextpnr-xilinx's US+ FASM writer
+    // (0-ultrascale-bits/patches/nextpnr-xilinx-usp-fasm.patch). Feature names
+    // and the values below were checked there against Vivado bitstreams
+    // decoded with bit2fasm; see SCOPE-K26.md in that repository.
+    // ---------------------------------------------------------------------
+
+    void write_choice(const std::string &name, const std::string &value)
+    {
+        write_prefix();
+        out << name << "." << value << std::endl;
+    }
+
+    void write_bool_usp(const std::string &name, bool value) { write_choice(name, value ? "V1" : "V0"); }
+
+    // prjuray names a site by its position among the same-prefix sites of
+    // its tile -- HDIO_TOP_RIGHT.IOB_X0Y7, RCLK_INT_L.BUFCE_LEAF_X1Y0 --
+    // which is what SiteInstPOD::rel_x/rel_y hold.
+    std::string usp_site_name(SiteIndex site)
+    {
+        const auto &sd = uarch->tile_extra_data(site.tile)->sites[site.site];
+        return stringf("%s_X%dY%d", IdString(sd.name_prefix).c_str(ctx), sd.rel_x, sd.rel_y);
+    }
+
+    // The site that a tile wire is a site pin of, found through the
+    // SITE_ENTRY pip from that wire into the site (site wires carry their
+    // site index in flags). Route-through pips carry no site of their own;
+    // nextpnr-xilinx needed generated tables for this.
+    int usp_site_of_input_wire(int tile, WireId wire)
+    {
+        for (auto p : ctx->getPipsDownhill(wire)) {
+            if (p.tile != tile)
+                continue;
+            const auto &pd = chip_pip_info(ctx->chip_info, p);
+            if (pd.flags != PIP_SITE_ENTRY)
+                continue;
+            return chip_tile_info(ctx->chip_info, p.tile).wires[pd.dst_wire].flags;
+        }
+        return -1;
+    }
+
+    // A bidirectional pip is in the chipdb twice, the reverse copy tagged
+    // with pip_config bit 1. prjuray names BOTH directions by the canonical
+    // (dst, src) pair plus .FWD/.REV -- INT.PIP.BYPASS_W8.INT_NODE_IMUX_37_INT_OUT0.REV
+    // -- so the reverse copy has its names swapped back. Returns "" for a
+    // one-way pip.
+    std::string usp_pip_direction_suffix(PipId pip, bool &swap)
+    {
+        swap = false;
+        const auto &pd = chip_pip_info(ctx->chip_info, pip);
+        const auto &ed = *reinterpret_cast<const XlnxPipExtraDataPOD *>(pd.extra_data.get());
+        if (ed.pip_config & 2) {
+            swap = true;
+            return ".REV";
+        }
+        WireId src = ctx->getPipSrcWire(pip);
+        for (auto p : ctx->getPipsDownhill(ctx->getPipDstWire(pip))) {
+            if (p.tile != pip.tile || ctx->getPipDstWire(p) != src)
+                continue;
+            const auto &rpd = chip_pip_info(ctx->chip_info, p);
+            if (rpd.flags == PIP_TILE_ROUTING &&
+                (reinterpret_cast<const XlnxPipExtraDataPOD *>(rpd.extra_data.get())->pip_config & 2))
+                return ".FWD";
+        }
+        return "";
+    }
+
+    pool<int> usp_pss_outputs_enabled;
+
+    // UltraScale+ pips whose configuration is NOT a routing bit: mostly
+    // route-throughs, selected by the passed site's own configuration, plus
+    // the PS interface. prjuray has no pip feature for any of them, and
+    // writing one assembles to nothing. Returns true when consumed.
+    bool write_pip_as_site_config_usp(PipId pip, const std::string &tt, const std::string &src, const std::string &dst)
+    {
+        // The HDIOB buffers: configured by write_io_usp(); prjuray has no
+        // HDIO_IOBPAIR pip feature at all.
+        if (boost::starts_with(dst, "HDIO_IOBPAIR_") || boost::starts_with(src, "HDIO_IOBPAIR_"))
+            return true;
+        // The HDIO input flip-flop bypass has no feature of any kind.
+        if (boost::contains(dst, "_IPFF") || boost::contains(src, "_IPFF"))
+            return true;
+
+        // The leaf clock buffer: CLK_LEAF_SITES_<n>_CLK_IN -> _CLK_LEAF passes
+        // through a BUFCE_LEAF and is <site>.BUFCE_LEAF.IN_USE.V1. The other
+        // four values are those of the in-use leaf in the Vivado reference
+        // for kv260_ps_blink: IINV.V1 and DELAY_TAP.V0 each SET a bit, and an
+        // all-clear DELAY_TAP matches no tap value.
+        if ((tt == "RCLK_INT_L" || tt == "RCLK_INT_R") && boost::starts_with(dst, "CLK_LEAF_SITES_") &&
+            boost::ends_with(dst, "_CLK_LEAF") && boost::ends_with(src, "_CLK_IN")) {
+            int si = usp_site_of_input_wire(pip.tile, ctx->getPipSrcWire(pip));
+            if (si < 0)
+                log_error("no BUFCE_LEAF site found for %s.%s\n", uarch->tile_name(pip.tile).c_str(), src.c_str());
+            push(uarch->tile_name(pip.tile));
+            push(usp_site_name(SiteIndex(pip.tile, si)));
+            push("BUFCE_LEAF");
+            write_choice("IN_USE", "V1");
+            write_choice("CE_TYPE", "SYNC");
+            write_choice("CEINV", "V0");
+            write_choice("IINV", "V1");
+            write_choice("DELAY_TAP", "V0");
+            pop(3);
+            return true;
+        }
+
+        // The PS interface: one tile-level enable (write_pss_intf_usp), set
+        // by fuzzers/070-ps8-int for any tile with a LOGIC_OUTS pip in use.
+        // The pips themselves have no bits.
+        if (tt == "INT_INTF_LEFT_TERM_PSS") {
+            if (boost::contains(dst, "LOGIC_OUTS") || boost::contains(src, "LOGIC_OUTS"))
+                usp_pss_outputs_enabled.insert(pip.tile);
+            return true;
+        }
+
+        // The clock tri-state/ESD driver: the track that drives it is carried
+        // by WIRE.CLK_VDISTR_*.USED.V1 (write_clocking_usp).
+        if (boost::contains(dst, "CLK_CMT_DRVR_TRI_ESD") && boost::ends_with(dst, "_SCHMITT_B"))
+            return true;
+
+        // The row clock buffer itself has no feature; its input mux does.
+        if (boost::starts_with(dst, "CLK_BUFCE_ROW_FSR") && boost::ends_with(dst, "_CLK_OUT"))
+            return true;
+
+        return false;
+    }
+
+    void write_pip_usp(PipId pip, std::string src, std::string dst)
+    {
+        const auto &pd = chip_pip_info(ctx->chip_info, pip);
+        const auto &ed = *reinterpret_cast<const XlnxPipExtraDataPOD *>(pd.extra_data.get());
+        std::string tt = IdString(chip_tile_info(ctx->chip_info, pip.tile).type_name).str(ctx);
+        std::string tile_name = uarch->tile_name(pip.tile);
+
+        if (write_pip_as_site_config_usp(pip, tt, src, dst))
+            return;
+
+        // The HDIO output flip-flop bypass is two features: the pip, and the
+        // site's output mux (OQ_MUX.NOT_OPTFF). Writing only the pip leaves
+        // the mux bits matching neither choice; Vivado sets both.
+        if (boost::contains(dst, "_OPFF") && boost::ends_with(dst, "_Q") && boost::contains(src, "_OPFF") &&
+            boost::ends_with(src, "_D1")) {
+            int si = usp_site_of_input_wire(pip.tile, ctx->getPipSrcWire(pip));
+            if (si < 0)
+                log_error("no HDIOLOGIC site found for %s.%s\n", tile_name.c_str(), src.c_str());
+            push(tile_name);
+            push(usp_site_name(SiteIndex(pip.tile, si)));
+            write_choice("OQ_MUX", "NOT_OPTFF");
+            pop(2);
+        } else if (ed.pip_config & 1) {
+            log_warning("Unprocessed route-thru %s.%s.%s\n", tt.c_str(), src.c_str(), dst.c_str());
+        }
+
+        // prjuray spells a routing bit TILE.PIP.DST.SRC (segbits_int.db).
+        bool swap = false;
+        std::string dir_suffix = usp_pip_direction_suffix(pip, swap);
+        if (swap)
+            std::swap(dst, src);
+        out << tile_name << ".PIP." << dst << "." << src << dir_suffix << std::endl;
+        last_was_blank = false;
+    }
+
+    // A wire inside the SLICE of a CLE tile, or WireId() if there is none.
+    WireId usp_slice_wire(int tile, const std::string &name)
+    {
+        BelId site_bel = ctx->getBelByLocation(Loc(tile % ctx->chip_info->width, tile / ctx->chip_info->width, 0));
+        if (site_bel == BelId())
+            return WireId();
+        IdStringList bel_name = ctx->getBelName(site_bel);
+        const std::string &bn = bel_name[1].str(ctx);
+        std::string site = bn.substr(0, bn.find('.'));
+        return ctx->getWireByName(IdStringList::concat(bel_name[0], ctx->idf("%s.%s", site.c_str(), name.c_str())));
+    }
+
+    void write_luts_config_usp(int tile)
+    {
+        std::string tname = uarch->tile_name(tile);
+        // CLEM / CLEM_R hold a SLICEM; CLEL_L / CLEL_R a SLICEL.
+        bool is_slicem = boost::starts_with(tname, "CLEM");
+        const auto &lts = uarch->tile_status.at(tile).lts;
+        const char *letters = "ABCDEFGH";
+
+        push(tname);
+        bool wa7_used = false, wa8_used = false, wa9_used = false;
+        bool any_lut = false;
+        for (int i = 0; i < 8; i++) {
+            CellInfo *lut6 = lts ? lts->cells[(i << 4) | BEL_6LUT] : nullptr;
+            CellInfo *lut5 = lts ? lts->cells[(i << 4) | BEL_5LUT] : nullptr;
+            auto found_rt = lut_route_throughs.find(std::make_pair(tile, i));
+            if (lut6 == nullptr && lut5 == nullptr && found_rt != lut_route_throughs.end()) {
+                // A LUT used as a route-through passes one input to O6.
+                push(stringf("%cLUT", letters[i]));
+                std::vector<bool> rt_init(64, false);
+                for (unsigned b = 0; b < 64; b++)
+                    rt_init[b] = (b & (1U << found_rt->second)) != 0;
+                write_vector("INIT[63:0]", rt_init);
+                pop();
+                any_lut = true;
+            }
+            if (lut6 != nullptr || lut5 != nullptr) {
+                any_lut = true;
+                push(stringf("%cLUT", letters[i]));
+                write_vector("INIT[63:0]", get_lut_init(lut6, lut5));
+                bool is_small = false, is_ram = false, is_srl = false;
+                for (int j = 0; j < 2; j++) {
+                    CellInfo *lut = (j == 1) ? lut5 : lut6;
+                    if (lut == nullptr)
+                        continue;
+                    std::string type = str_or_default(lut->attrs, id_X_ORIG_TYPE);
+                    if (type == "RAMD64E" || type == "RAMS64E") {
+                        is_ram = true;
+                    } else if (type == "RAMD32" || type == "RAMS32") {
+                        is_ram = true;
+                        is_small = true;
+                    } else if (type == "SRL16E") {
+                        is_srl = true;
+                        is_small = true;
+                    } else if (type == "SRLC32E") {
+                        is_srl = true;
+                    }
+                    wa7_used |= (lut->getPort(id_WA7) != nullptr);
+                    wa8_used |= (lut->getPort(id_WA8) != nullptr);
+                    wa9_used |= (lut->getPort(id_WA9) != nullptr);
+                }
+                // MODE and SIZE exist only where the LUT can be memory; prjuray
+                // has no CLEL entry for either.
+                if (is_slicem) {
+                    write_choice("MODE", is_ram ? "RAM" : is_srl ? "SRL" : "LUT");
+                    write_choice("SIZE", is_small ? "SMALL" : "LARGE");
+                } else if (is_ram || is_srl) {
+                    log_error("LUT memory placed on a SLICEL in tile %s\n", tname.c_str());
+                }
+                pop();
+            }
+            // OUTMUX<c>: the chipdb's site pip names are prjuray's.
+            WireId outmux = usp_slice_wire(tile, stringf("%cMUX", letters[i]));
+            if (outmux != WireId())
+                write_routing_bel(outmux);
+        }
+        if (any_lut && is_slicem) {
+            write_bool_usp("WA7USED", wa7_used);
+            write_bool_usp("WA8USED", wa8_used);
+            write_bool_usp("WA9USED", wa9_used);
+        }
+        pop();
+    }
+
+    void write_ffs_config_usp(int tile)
+    {
+        const auto &lts = uarch->tile_status.at(tile).lts;
+        if (!lts)
+            return;
+        push(uarch->tile_name(tile));
+
+        // Per-half control state: ABCD and EFGH each share a clock, set/reset
+        // and two clock enables. Only rank 1 carries CLKINV/SRINV/MODE/SYNC.
+        struct CtrlGroup
+        {
+            bool used = false;
+            bool latch = false, sync = false, clkinv = false, srinv = false;
+            bool srused[2] = {false, false};
+            bool ceused[2] = {false, false};
+            bool rank_used[2] = {false, false};
+        } group[2];
+
+        for (int i = 0; i < 8; i++) {
+            int half = i / 4;
+            for (int j = 0; j < 2; j++) {
+                CellInfo *ff = lts->cells[(i << 4) | (j == 1 ? BEL_FF2 : BEL_FF)];
+                if (ff == nullptr)
+                    continue;
+                bool zrst = false;
+                bool zinit = (int_or_default(ff->params, id_INIT, 0) != 1);
+                bool is_latch = false, is_sync = false;
+                std::string type = str_or_default(ff->attrs, id_X_ORIG_TYPE, "");
+                if (type == "FDRE" || type == "FDRE_1") {
+                    zrst = true;
+                    is_sync = true;
+                } else if (type == "FDSE" || type == "FDSE_1") {
+                    is_sync = true;
+                } else if (type == "FDCE" || type == "FDCE_1") {
+                    zrst = true;
+                } else if (type == "FDPE" || type == "FDPE_1") {
+                    // async set
+                } else if (type == "LDCE" || type == "LDPE") {
+                    zrst = (type == "LDCE");
+                    is_latch = true;
+                } else {
+                    log_error("unsupported FF type: '%s'\n", type.c_str());
+                }
+                bool negedge_ff = boost::ends_with(type, "_1");
+
+                // Both values carry bits, so always write one.
+                push(get_bel_name(ff->bel));
+                write_choice("INIT", zinit ? "V0" : "V1");
+                write_choice("SRVAL", zrst ? "V0" : "V1");
+                pop();
+
+                NetInfo *sr = ff->getPort(id_SR), *ce = ff->getPort(id_CE);
+                auto &g = group[half];
+                g.used = true;
+                g.rank_used[j] = true;
+                g.latch = g.latch || is_latch;
+                g.sync = g.sync || is_sync;
+                g.clkinv = g.clkinv || negedge_ff || int_or_default(ff->params, id_IS_C_INVERTED) == 1;
+                // yosys spells "no reset" as SR tied to VCC with IS_R_INVERTED=1:
+                // either constant is an unused reset.
+                bool sr_is_const = sr == nullptr || sr->name == ctx->id("$PACKER_GND_NET") ||
+                                   sr->name == ctx->id("$PACKER_VCC_NET");
+                g.srused[j] = g.srused[j] || !sr_is_const;
+                if (!sr_is_const)
+                    g.srinv = g.srinv || int_or_default(ff->params, id_IS_R_INVERTED) == 1 ||
+                              int_or_default(ff->params, id_IS_S_INVERTED) == 1;
+                g.ceused[j] = g.ceused[j] || (ce != nullptr && ce->name != ctx->id("$PACKER_VCC_NET"));
+
+                // FFMUX<c><1|2> input select.
+                write_routing_bel(ctx->getBelPinWire(ff->bel, id_D));
+            }
+        }
+
+        for (int half = 0; half < 2; half++) {
+            auto &g = group[half];
+            if (!g.used)
+                continue;
+            std::string base = half ? "EFGH" : "ABCD";
+            push(base + "FF");
+            write_choice("MODE", g.latch ? "LATCH" : "FF");
+            write_choice("SYNC", g.sync ? "SYNC" : "ASYNC");
+            write_bool_usp("CLKINV", g.clkinv);
+            write_bool_usp("SRINV", g.srinv);
+            write_bool_usp("CEUSED", g.ceused[0]);
+            write_bool_usp("SRUSED", g.srused[0]);
+            pop();
+            if (g.rank_used[1]) {
+                push(base + "FF2");
+                write_bool_usp("CEUSED", g.ceused[1]);
+                write_bool_usp("SRUSED", g.srused[1]);
+                pop();
+            }
+        }
+        pop();
+    }
+
+    pool<int> usp_hv_banks, usp_lv_banks;
+
+    void write_io_config_usp(CellInfo *pad)
+    {
+        NetInfo *pad_net = pad->getPort(id_PAD);
+        NPNR_ASSERT(pad_net != nullptr);
+        std::string iostandard = str_or_default(pad->attrs, id_IOSTANDARD, "LVCMOS33");
+        std::string pulltype = str_or_default(pad->attrs, id_PULLTYPE, "NONE");
+        std::string slew = str_or_default(pad->attrs, id_SLEW, "SLOW");
+        int drive = int_or_default(pad->attrs, id_DRIVE, 12);
+
+        bool is_output = pad_net->driver.cell != nullptr;
+        bool is_input = false;
+        for (auto &usr : pad_net->users)
+            if (usr.cell->type == id_IOB_INBUF)
+                is_input = true;
+
+        std::string tile = uarch->tile_name(pad->bel.tile);
+        push(tile);
+        push(usp_site_name(uarch->get_bel_site(pad->bel)));
+        if (is_input)
+            write_choice("IOSTANDARD_IN", iostandard);
+        if (is_output) {
+            // 031-iob-spec folds drive and slew into the name:
+            // LVCMOS33_IDRIVE_I12_SLEW_SLEW_SLOW.
+            write_choice("IOSTANDARD_OUT", iostandard + "_IDRIVE_I" + std::to_string(drive) + "_SLEW_SLEW_" + slew);
+            if (is_input)
+                write_choice("IOSTANDARD_IN_OUT", iostandard);
+        }
+        write_choice("PULLTYPE", pulltype);
+        pop(2);
+
+        // Bank voltage is a per-bank bit in the HDIO_TOP_RIGHT tile.
+        if (boost::starts_with(tile, "HDIO_TOP_RIGHT")) {
+            bool low = iostandard == "LVCMOS12" || iostandard == "LVCMOS15" || iostandard == "LVCMOS18";
+            (low ? usp_lv_banks : usp_hv_banks).insert(pad->bel.tile);
+        }
+    }
+
+    void write_io_usp()
+    {
+        for (auto &cell : ctx->cells) {
+            CellInfo *ci = cell.second.get();
+            if (ci->type == id_IOB_PAD && ci->bel != BelId()) {
+                write_io_config_usp(ci);
+                blank();
+            }
+        }
+        for (int tile : usp_hv_banks) {
+            push(uarch->tile_name(tile));
+            write_choice("BANK_VOLTAGE", "HIGH_VOLTAGE");
+            pop();
+        }
+        for (int tile : usp_lv_banks) {
+            if (usp_hv_banks.count(tile))
+                log_error("tile %s has both a low- and a high-voltage IO standard\n", uarch->tile_name(tile).c_str());
+            push(uarch->tile_name(tile));
+            write_choice("BANK_VOLTAGE", "LOW_VOLTAGE");
+            pop();
+        }
+        blank();
+    }
+
+    // Clock distribution and route tracks carry a per-tile "in use" bit.
+    // dump_features.tcl applies it to two wire sets depending on tile type.
+    static bool usp_wire_used_feature(const std::string &tt, const std::string &wire)
+    {
+        static const pool<std::string> group_a = {
+                "RCLK_BRAM_INTF_L", "RCLK_BRAM_INTF_TD_L", "RCLK_BRAM_INTF_TD_R", "RCLK_CLEL_L_L",
+                "RCLK_CLEL_L",      "RCLK_CLEL_L_R",       "RCLK_CLEM_CLKBUF_L",  "RCLK_CLEM_L",
+                "RCLK_DSP_INTF_L",  "RCLK_DSP_INTF_R",     "RCLK_RCLK_URAM_INTF_L_FT", "RCLK_CLEM_R",
+                "RCLK_CLEL_R",      "GTH_QUAD_RIGHT"};
+        static const pool<std::string> group_b = {
+                "RCLK_DSP_INTF_CLKBUF_L", "RCLK_CLEM_CLKBUF_L", "RCLK_AMS_CFGIO",
+                "RCLK_INTF_LEFT_TERM_ALTO", "RCLK_XIPHY_OUTER_RIGHT", "RCLK_RCLK_XIPHY_INNER_FT",
+                "RCLK_HDIO", "GTH_QUAD_RIGHT"};
+        if (group_a.count(tt))
+            if (boost::starts_with(wire, "CLK_TEST_BUF_SITE_") || boost::starts_with(wire, "CLK_HROUTE_CORE_OPT") ||
+                boost::starts_with(wire, "CLK_VDISTR_BOT") || boost::starts_with(wire, "CLK_VDISTR_TOP") ||
+                boost::starts_with(wire, "CLK_VROUTE_BOT") || boost::starts_with(wire, "CLK_VROUTE_TOP"))
+                return true;
+        if (group_b.count(tt))
+            if (boost::starts_with(wire, "CLK_HROUTE") || boost::starts_with(wire, "CLK_HDISTR"))
+                return true;
+        if (tt == "CMT_L" || tt == "CMT_RIGHT")
+            if (boost::starts_with(wire, "CLK_HROUTE_") || boost::starts_with(wire, "CLK_HDISTR_") ||
+                boost::starts_with(wire, "CLK_VDISTR_") || boost::starts_with(wire, "CLK_TEST_BUF_SITE_"))
+                return true;
+        return false;
+    }
+
+    void write_clocking_usp()
+    {
+        // A distribution wire is a node spanning every tile in the row, so
+        // walk all of its tile wires: the track is driven along its length.
+        std::set<std::pair<int, std::string>> emitted;
+        for (auto &net : ctx->nets) {
+            NetInfo *ni = net.second.get();
+            for (auto &w : ni->wires) {
+                for (WireId tw : ctx->get_tile_wire_range(w.first)) {
+                    const auto &ti = chip_tile_info(ctx->chip_info, tw.tile);
+                    std::string tts = IdString(ti.type_name).str(ctx);
+                    std::string wname = IdString(ti.wires[tw.index].name).str(ctx);
+                    if (!usp_wire_used_feature(tts, wname))
+                        continue;
+                    if (!emitted.insert({tw.tile, wname}).second)
+                        continue;
+                    push(uarch->tile_name(tw.tile));
+                    push("WIRE");
+                    write_choice(wname + ".USED", "V1");
+                    pop(2);
+                }
+            }
+        }
+        blank();
+    }
+
+    // The PS interface tile's one enable; without it every fabric output on
+    // the PS side is dead (segbits_int_intf_left_term_pss.db holds nothing
+    // else).
+    void write_pss_intf_usp()
+    {
+        for (int tile : usp_pss_outputs_enabled) {
+            push(uarch->tile_name(tile));
+            write_choice("OUTPUTS_ENABLED", "1");
+            pop();
+        }
+        blank();
+    }
+
     void write_fasm()
     {
-        get_invertible_pins(ctx, invertible_pins);
+        get_invertible_pins(ctx, invertible_pins, uarch->usp);
+        if (uarch->usp) {
+            // BRAM, the PLL/MMCM and the DSP are not ported yet (the packer
+            // rejects them); the CLE, the IO and the clock tracks are.
+            write_logic();
+            write_io_usp();
+            write_routing();
+            write_clocking_usp();
+            write_pss_intf_usp();
+            return;
+        }
         write_logic();
         write_io();
         write_routing();

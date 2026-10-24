@@ -26,7 +26,7 @@
 
 NEXTPNR_NAMESPACE_BEGIN
 
-void get_invertible_pins(Context *ctx, dict<IdString, pool<IdString>> &invertible_pins)
+void get_invertible_pins(Context *ctx, dict<IdString, pool<IdString>> &invertible_pins, bool usp)
 {
     // List of pins that have an IS_x_INVERTED attributed, so we can optimise tie-zero to tie-one for these pins
     // See scripts/invertible_pins.py
@@ -40,9 +40,20 @@ void get_invertible_pins(Context *ctx, dict<IdString, pool<IdString>> &invertibl
     invertible_pins[id_BUFGCTRL].insert(id_IGNORE1);
     invertible_pins[id_BUFHCE].insert(id_CE);
     invertible_pins[id_FDRE].insert(id_C);
+    // On UltraScale+ a tied-off set/reset becomes VCC with the pin inverted,
+    // as nextpnr-xilinx does: without the RCLK GND_WIRE pips (no prjuray
+    // bits) GND has no route to a CLE's reset input.
+    if (usp)
+        invertible_pins[id_FDRE].insert(id_R);
     invertible_pins[id_FDSE].insert(id_C);
+    if (usp)
+        invertible_pins[id_FDSE].insert(id_S);
     invertible_pins[id_FDCE].insert(id_C);
+    if (usp)
+        invertible_pins[id_FDCE].insert(id_CLR);
     invertible_pins[id_FDPE].insert(id_C);
+    if (usp)
+        invertible_pins[id_FDPE].insert(id_PRE);
 
     invertible_pins[id_SRL16E].insert(id_CLK);
     invertible_pins[id_SRLC32E].insert(id_CLK);
