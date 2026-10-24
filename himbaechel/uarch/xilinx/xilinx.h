@@ -128,6 +128,10 @@ struct XilinxImpl : HimbaechelAPI
     bool xc7_logic_tile_valid(IdString tileType, const LogicTileStatus &lts) const;
     bool xcu_logic_tile_valid(IdString tileType, const LogicTileStatus &lts) const;
 
+    // Clusters
+    bool getClusterPlacement(ClusterId cluster, BelId root_bel,
+                             std::vector<std::pair<CellInfo *, BelId>> &placement) const override;
+
     // Pips
     bool is_pip_unavail(PipId pip) const;
     bool checkPipAvail(PipId pip) const override { return !is_pip_unavail(pip); }

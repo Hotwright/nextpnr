@@ -165,7 +165,8 @@ bool XilinxImpl::xcu_logic_tile_valid(IdString tile_type, const LogicTileStatus 
                 out_fmux_cell = lts.cells[BEL_F9MUX];
             auto out_fmux = get_tags(out_fmux_cell);
 
-            auto carry8 = get_tags(lts.cells[BEL_CARRY8]);
+            CellInfo *carry8_cell = lts.cells[BEL_CARRY8];
+            auto carry8 = get_tags(carry8_cell);
             // CARRY8 might use X
             if (carry8 && carry8->carry.x_sigs[i] != nullptr) {
                 if (x_net == nullptr)
@@ -181,9 +182,8 @@ bool XilinxImpl::xcu_logic_tile_valid(IdString tile_type, const LogicTileStatus 
             if (ff1 && ff1->ff.d != nullptr && ff1->ff.d->driver.cell != nullptr) {
                 auto &drv = ff1->ff.d->driver;
                 if ((drv.cell == lut6_cell && drv.port != id_MC31) || drv.cell == lut5_cell ||
-                    drv.cell == out_fmux_cell) {
-                    // Direct, OK
-                    // FIXME: CARRY8 direct
+                    drv.cell == out_fmux_cell || (carry8_cell != nullptr && drv.cell == carry8_cell)) {
+                    // Direct, OK: FFMUX selects the CARRY8's XORIN or CY
                 } else {
                     // Indirect, must use X input
                     if (x_net == nullptr)
@@ -200,9 +200,8 @@ bool XilinxImpl::xcu_logic_tile_valid(IdString tile_type, const LogicTileStatus 
             if (ff2 && ff2->ff.d != nullptr && ff2->ff.d->driver.cell != nullptr) {
                 auto &drv = ff2->ff.d->driver;
                 if ((drv.cell == lut6_cell && drv.port != id_MC31) || drv.cell == lut5_cell ||
-                    drv.cell == out_fmux_cell) {
-                    // Direct, OK
-                    // FIXME: CARRY8 direct
+                    drv.cell == out_fmux_cell || (carry8_cell != nullptr && drv.cell == carry8_cell)) {
+                    // Direct, OK: FFMUX selects the CARRY8's XORIN or CY
                 } else {
                     // Indirect, must use I input
                     if (i_net == nullptr)
@@ -238,13 +237,20 @@ bool XilinxImpl::xcu_logic_tile_valid(IdString tile_type, const LogicTileStatus 
                 mux_output_used = true;
             }
 
-            if (carry8 && carry8->carry.out_sigs[i] != nullptr) {
-                // FIXME: direct connections to FF
-                if (mux_output_used) {
-                    DBG();
-                    return false;
+            // A CARRY8 output leaves the slice through OUTMUX unless its only
+            // user is a flip-flop of this eighth. CO7 is the exception: it is
+            // COUT and has its own pin.
+            for (int k = 0; k < 2 && carry8; k++) {
+                NetInfo *c8_out = (k == 0) ? carry8->carry.out_sigs[i] : carry8->carry.cout_sigs[i];
+                if (c8_out == nullptr || (k == 1 && i == 7))
+                    continue;
+                if (c8_out->users.entries() > 1 || ((!ff1 || c8_out != ff1->ff.d) && (!ff2 || c8_out != ff2->ff.d))) {
+                    if (mux_output_used) {
+                        DBG();
+                        return false;
+                    }
+                    mux_output_used = true;
                 }
-                mux_output_used = true;
             }
             if (out_fmux) {
                 NetInfo *f7f8 = out_fmux->mux.out;
@@ -305,6 +311,57 @@ bool XilinxImpl::xcu_logic_tile_valid(IdString tile_type, const LogicTileStatus 
         } else if (!lts.halfs[i].valid) {
             return false;
         }
+    }
+    return true;
+}
+
+// A carry chain's constr_y counts CARRY8s, one per CLE row. On UltraScale+
+// every 30 CLE rows of a column are separated by an RCLK or RBRK row with no
+// CLE, and the chain runs straight past it (COUT of the CLE below feeds CIN of
+// the CLE above), so map the k-th CARRY8 of the chain to the k-th row up that
+// has one. Everything else uses the plain offsets.
+bool XilinxImpl::getClusterPlacement(ClusterId cluster, BelId root_bel,
+                                     std::vector<std::pair<CellInfo *, BelId>> &placement) const
+{
+    CellInfo *root_cell = ctx->getClusterRootCell(cluster);
+    if (!usp || root_cell->type != id_CARRY8)
+        return HimbaechelAPI::getClusterPlacement(cluster, root_bel, placement);
+
+    placement.clear();
+    NPNR_ASSERT(root_bel != BelId());
+    Loc root_loc = ctx->getBelLocation(root_bel);
+    root_loc.z = BEL_CARRY8;
+    root_bel = ctx->getBelByLocation(root_loc);
+    if (root_bel == BelId() || !ctx->isValidBelForCellType(root_cell->type, root_bel))
+        return false;
+    placement.emplace_back(root_cell, root_bel);
+
+    std::vector<int> rows{root_loc.y};
+    auto row_of = [&](int k) {
+        while (int(rows.size()) <= k) {
+            int y = rows.back() - 1;
+            // At most one non-CLE row between two links of a chain.
+            if (y >= 0 && ctx->getBelByLocation(Loc(root_loc.x, y, BEL_CARRY8)) == BelId())
+                --y;
+            if (y < 0 || ctx->getBelByLocation(Loc(root_loc.x, y, BEL_CARRY8)) == BelId())
+                return -1;
+            rows.push_back(y);
+        }
+        return rows.at(k);
+    };
+
+    for (auto child : root_cell->constr_children) {
+        NPNR_ASSERT(child->constr_y <= 0);
+        Loc child_loc;
+        child_loc.x = root_loc.x + child->constr_x;
+        child_loc.y = row_of(-child->constr_y);
+        if (child_loc.y < 0)
+            return false;
+        child_loc.z = child->constr_abs_z ? child->constr_z : (root_loc.z + child->constr_z);
+        BelId child_bel = ctx->getBelByLocation(child_loc);
+        if (child_bel == BelId() || !ctx->isValidBelForCellType(child->type, child_bel))
+            return false;
+        placement.emplace_back(child, child_bel);
     }
     return true;
 }

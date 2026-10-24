@@ -747,6 +747,7 @@ struct FasmBackend
             if (uarch->usp) {
                 write_luts_config_usp(tile);
                 write_ffs_config_usp(tile);
+                write_carry_config_usp(tile);
                 blank();
                 continue;
             }
@@ -2190,6 +2191,46 @@ struct FasmBackend
             }
         }
         pop();
+    }
+
+    // CARRY8 mode and input selects, names from prjuray's segbits_cle*.db.
+    //
+    // There is no CI state for a chained CARRY8. Vivado's own chains decode as
+    // CARRY8.CI.V0 plus the tile pip CLE_CLE_*_SITE_0_CIN_PIN.CLE_CLE_*_SITE_0_CIN,
+    // and the router writes that pip when it routes the chain net to CIN.
+    void write_carry_config_usp(int tile)
+    {
+        const auto &lts = uarch->tile_status.at(tile).lts;
+        if (!lts)
+            return;
+        CellInfo *carry = lts->cells[BEL_CARRY8];
+        if (carry == nullptr)
+            return;
+        const char *letters = "ABCDEFGH";
+
+        push(uarch->tile_name(tile));
+        push("CARRY8");
+        write_choice("CARRY_TYPE", str_or_default(carry->params, id_CARRY_TYPE, "SINGLE_CY8"));
+        auto ci_const = carry->attrs.find(ctx->id("X_CARRY8_CI_CONST"));
+        if (ci_const != carry->attrs.end())
+            write_choice("CI", ci_const->second.as_int64() ? "V1" : "V0");
+        else if (carry->getPort(id_AX) != nullptr)
+            write_choice("CI", "AX");
+        else
+            write_choice("CI", "V0");
+        write_choice("CI_TOP", carry->getPort(id_EX) != nullptr ? "EX" : "V0");
+
+        // DI<n> picks the <c>5LUT's O5 or the <c>X slice input.
+        for (int i = 0; i < 8; i++) {
+            NetInfo *di = carry->getPort(ctx->idf("DI%d", i));
+            if (di == nullptr || di->driver.cell == nullptr)
+                continue;
+            BelId drv_bel = di->driver.cell->bel;
+            bool from_lut = drv_bel != BelId() && drv_bel.tile == carry->bel.tile &&
+                            ctx->getBelLocation(drv_bel).z == ((i << 4) | BEL_5LUT);
+            write_choice(stringf("DI%d", i), from_lut ? stringf("DI%d", i) : stringf("%cX", letters[i]));
+        }
+        pop(2);
     }
 
     pool<int> usp_hv_banks, usp_lv_banks;

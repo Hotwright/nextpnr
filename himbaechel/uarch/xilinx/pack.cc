@@ -320,7 +320,7 @@ void XilinxPacker::pack_lutffs()
                 ci->constr_z = (BEL_FF - BEL_6LUT);
                 ++pairs;
             }
-        } else if (d->driver.cell->type == id_CARRY4) {
+        } else if (d->driver.cell->type == (uarch->usp ? id_CARRY8 : id_CARRY4)) {
             CellInfo *carry = d->driver.cell;
             if (carry->cluster != ClusterId() || !carry->constr_children.empty()) {
                 auto port = d->driver.port.str(ctx);
@@ -337,7 +337,7 @@ void XilinxPacker::pack_lutffs()
                 ci->constr_x = carry->constr_x;
                 ci->constr_y = carry->constr_y;
                 ci->constr_abs_z = carry->constr_abs_z;
-                ci->constr_z = carry->constr_z + ((BEL_FF | (z << 4)) - BEL_CARRY4);
+                ci->constr_z = carry->constr_z + ((BEL_FF | (z << 4)) - (uarch->usp ? BEL_CARRY8 : BEL_CARRY4));
                 ++pairs;
             }
         }
@@ -840,6 +840,7 @@ void XilinxImpl::pack()
         packer.pack_clocking();
         packer.generate_constraints();
         packer.pack_muxfs();
+        packer.pack_carries();
         packer.pack_luts();
         packer.pack_dram();
         packer.pack_ffs();

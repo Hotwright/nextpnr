@@ -427,7 +427,7 @@ void XilinxImpl::configurePlacerStatic(PlacerStaticCfg &cfg)
 
     cfg.predict_delay = [](Context *ctx, const PlacerStaticCfg &cfg, Loc src_loc, IdString src_pin, Loc dst_loc,
                            IdString dst_pin) -> delay_t {
-        if (dst_pin == id_CIN && src_pin == id_CO3)
+        if (dst_pin == id_CIN && (src_pin == id_CO3 || src_pin == id_CO7))
             return 0;
         // TODO: improve sophistication here based on old nextpnr-xilinx code
         int dist_x = std::abs(dst_loc.x - src_loc.x), dist_y = std::abs(dst_loc.y - src_loc.y);
@@ -449,6 +449,11 @@ void XilinxImpl::configurePlacerStatic(PlacerStaticCfg &cfg)
 
         comb.zero_area_cells.insert(id_CARRY4);
         comb.zero_area_cells.insert(id_SELMUX2_1);
+        if (usp) {
+            comb.bel_area[id_CARRY8] = StaticRect(0.0f, 0.0f);
+            comb.cell_area[id_CARRY8] = StaticRect(1.0f, 1.0f);
+            comb.zero_area_cells.insert(id_CARRY8);
+        }
 
         comb.spacer_rect = StaticRect(1.0f, 0.125f);
     }
@@ -486,7 +491,7 @@ void XilinxImpl::configurePlacerStatic(PlacerStaticCfg &cfg)
             return {};
         auto tags = get_tags(ci);
         if (tags->lut.is_memory ||
-            (ci->cluster != ClusterId() && ctx->getClusterRootCell(ci->cluster)->type == id_CARRY4)) {
+            (ci->cluster != ClusterId() && ctx->getClusterRootCell(ci->cluster)->type.in(id_CARRY4, id_CARRY8))) {
             // macro LUTs use either a half or whole LUT, always
             return {(tags->lut.input_count == 6) ? StaticRect(1.0f, 0.125f) : StaticRect(1.0f, 0.0625f)};
         } else {
@@ -665,6 +670,14 @@ void XilinxImpl::assign_cell_tags()
         } else if (ci->type.in(id_F7MUX, id_F8MUX, id_F9MUX, id_SELMUX2_1)) {
             ct.mux.sel = ci->getPort(id_S0);
             ct.mux.out = ci->getPort(id_OUT);
+        } else if (ci->type == id_CARRY8) {
+            for (int i = 0; i < 8; i++) {
+                ct.carry.out_sigs[i] = ci->getPort(ctx->idf("O%d", i));
+                ct.carry.cout_sigs[i] = ci->getPort(ctx->idf("CO%d", i));
+                ct.carry.x_sigs[i] = nullptr;
+            }
+            ct.carry.x_sigs[0] = ci->getPort(id_AX);
+            ct.carry.x_sigs[4] = ci->getPort(id_EX);
         } else if (ci->type == id_CARRY4) {
             for (int i = 0; i < 4; i++) {
                 ct.carry.out_sigs[i] = ci->getPort(ctx->idf("O%d", i));

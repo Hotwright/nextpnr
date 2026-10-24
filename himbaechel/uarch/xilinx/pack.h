@@ -233,6 +233,11 @@ struct USPacker : public XilinxPacker
     void preplace_clocking();
     void pack_clocking();
 
+    // Carries
+    bool has_illegal_fanout(NetInfo *carry);
+    void split_carry8s();
+    void pack_carries();
+
     // Families of cell not yet ported to UltraScale+; error out rather than
     // mis-pack them.
     void check_unsupported();
