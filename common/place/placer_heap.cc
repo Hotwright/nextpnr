@@ -1386,6 +1386,8 @@ class HeAPPlacer
                 std::vector<std::pair<CellInfo *, BelId>> targets;
                 // List of bels we placed things at; and the cell that was there before if applicable
                 dict<BelId, CellInfo *> moves_made;
+                // Control set of the cluster's FFs per (x, y, FF group)
+                dict<std::pair<std::pair<int, int>, int>, int32_t> cluster_ctrl_sets;
 
                 if (!ctx->getClusterPlacement(ci->cluster, sz, targets))
                     continue;
@@ -1396,6 +1398,22 @@ class HeAPPlacer
                     // Check it satisfies the region constraint if applicable
                     if (!target.first->testRegion(target.second))
                         goto fail;
+                    // A cluster's FFs must fit the control set already bound in
+                    // each FF group they land in, and agree with each other
+                    // there, or bind_ctrl_set below trips its assertion (a
+                    // CARRY8 chain with FFs, beside FFs of another control set).
+                    if (!p->test_ctrl_set(target.second, target.first->name))
+                        goto fail;
+                    if (p->cell_ctrl_set.count(target.first->name) &&
+                        ctx->getBelBucketForBel(target.second) == p->cfg.ff_bel_bucket) {
+                        Loc tl = ctx->getBelLocation(target.second);
+                        auto key = std::make_pair(std::make_pair(tl.x, tl.y), p->z_to_ctrl_set.at(tl.z));
+                        int32_t cs = p->cell_ctrl_set.at(target.first->name);
+                        auto prev = cluster_ctrl_sets.find(key);
+                        if (prev != cluster_ctrl_sets.end() && prev->second != cs)
+                            goto fail;
+                        cluster_ctrl_sets[key] = cs;
+                    }
                     if (ctrl_set_group != -1 && ctx->getBelBucketForBel(target.second) == p->cfg.ff_bel_bucket &&
                         p->z_to_ctrl_set.at(ctx->getBelLocation(target.second).z) == ctrl_set_group)
                         ctrl_set_match = true;

@@ -2387,15 +2387,17 @@ struct FasmBackend
     // the PS side is dead (segbits_int_intf_left_term_pss.db holds nothing
     // else).
     // CONFIG_SITE (ICAPE3, STARTUPE3, BSCANE2, ...). A placed primitive is
-    // <tile>.<BEL>.IN_USE, plus the attributes characterised in
+    // <tile>.<BEL>.IN_USE (plus STARTUP.PROG_USR), as characterised in
     // 0-ultrascale-bits/designs/kv260_cfg_char; the bits are
     // db-corrections/zynqusp/segbits_cfg_config.corrections.
     void write_config_usp()
     {
         for (auto &cell : ctx->cells) {
             CellInfo *ci = cell.second.get();
-            if (!ci->type.in(id_ICAP_TOP, id_ICAP_BOT, id_STARTUP, id_BSCAN, id_DNA_PORT, id_USR_ACCESS,
-                             id_FRAME_ECC, id_EFUSE_USR) ||
+            // FRAME_ECC, EFUSE_USR and USR_ACCESS set no site bits in Vivado's
+            // bitstreams, nor does ICAP_AUTO_SWITCH: only their routing is
+            // configured.
+            if (!ci->type.in(id_ICAP_TOP, id_ICAP_BOT, id_STARTUP, id_BSCAN, id_DNA_PORT) ||
                 ci->bel == BelId())
                 continue;
             std::string bel = ctx->getBelName(ci->bel)[1].str(ctx);
@@ -2403,9 +2405,6 @@ struct FasmBackend
             push(uarch->tile_name(ci->bel.tile));
             push(bel);
             write_bit("IN_USE");
-            if (ci->type.in(id_ICAP_TOP, id_ICAP_BOT))
-                write_bit("ICAP_AUTO_SWITCH",
-                          str_or_default(ci->params, id_ICAP_AUTO_SWITCH, "DISABLE") == "ENABLE");
             if (ci->type == id_STARTUP)
                 write_bit("PROG_USR", str_or_default(ci->params, id_PROG_USR, "FALSE") == "TRUE");
             pop(2);
