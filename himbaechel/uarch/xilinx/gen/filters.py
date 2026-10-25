@@ -123,6 +123,12 @@ def include_pip(tile_type, p):
         # assemble to nothing. Constants come from the INT tiles instead.
         if tile_type.startswith("RCLK_INT_") and p.src_wire().name().startswith(("GND_WIRE", "VCC_WIRE")):
             return False
+        # The HDISTR feed-through across the XIPHY/CMT column has no frames
+        # in the tilegrid, so whatever enables it cannot be written. Vivado
+        # never uses it either: it crosses the column on HROUTE (a CMT_L mux)
+        # and roots the clock east of it.
+        if tile_type == "RCLK_RCLK_XIPHY_INNER_FT":
+            return False
         if tile_type.startswith("HDIO_"):
             # The differential-pair crossover: OP -> OUTINV (inverting) ->
             # OUTB_B -> the partner's OUTB_B_IN -> its OUTMUX. Only a true
