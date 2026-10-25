@@ -241,6 +241,9 @@ struct USPacker : public XilinxPacker
     // BRAM
     void pack_bram();
 
+    // ICAPE3, STARTUPE3, BSCANE2 and the rest of CONFIG_SITE
+    void pack_config();
+
     // Families of cell not yet ported to UltraScale+; error out rather than
     // mis-pack them.
     void check_unsupported();

@@ -123,6 +123,13 @@ def include_pip(tile_type, p):
         # assemble to nothing. Constants come from the INT tiles instead.
         if tile_type.startswith("RCLK_INT_") and p.src_wire().name().startswith(("GND_WIRE", "VCC_WIRE")):
             return False
+        # Fabric into the clock network (INT_NODE_IMUX -> INT_RCLK_TO_CLK_* ->
+        # BUFCE_ROW_FSR -> HDISTR). Nothing we pack drives a clock from the
+        # fabric, but the router used it as a detour for plain data (the
+        # ICAPE3 outputs in kv260_icap_idcode), and prjuray-db knows only 18
+        # of the 42 RCLK_INT_L pips that feed it.
+        if tile_type.startswith("RCLK_INT_") and p.dst_wire().name().startswith("INT_RCLK_TO_CLK_"):
+            return False
         # The HDISTR feed-through across the XIPHY/CMT column has no frames
         # in the tilegrid, so whatever enables it cannot be written. Vivado
         # never uses it either: it crosses the column on HROUTE (a CMT_L mux)

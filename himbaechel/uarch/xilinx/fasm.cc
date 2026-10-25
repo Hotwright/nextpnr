@@ -54,6 +54,7 @@ struct FasmBackend
     std::ostream &out;
     std::vector<std::string> fasm_ctx;
     dict<int, std::vector<PipId>> pips_by_tile;
+    pool<int> outputs_enabled_tiles; // INT_INTF_R_PCIE4 tiles with OUTPUTS_ENABLED written
 
     dict<std::pair<int, int>, unsigned> lut_route_throughs;
 
@@ -2027,6 +2028,14 @@ struct FasmBackend
             log_warning("Unprocessed route-thru %s.%s.%s\n", tt.c_str(), src.c_str(), dst.c_str());
         }
 
+        // An INT_INTF_R_PCIE4 passes nothing from its site into the fabric
+        // (LOGIC_OUTS_R -> LOGIC_OUTS_L) unless the tile's OUTPUTS_ENABLED is
+        // set: without it an ICAPE3 reads as all-zero. Vivado sets it on
+        // exactly the tiles whose LOGIC_OUTS are used.
+        if (tt == "INT_INTF_R_PCIE4" && boost::starts_with(dst, "LOGIC_OUTS_L") &&
+            outputs_enabled_tiles.insert(pip.tile).second)
+            out << tile_name << ".OUTPUTS_ENABLED" << std::endl;
+
         // prjuray spells a routing bit TILE.PIP.DST.SRC (segbits_int.db).
         bool swap = false;
         std::string dir_suffix = usp_pip_direction_suffix(pip, swap);
@@ -2377,6 +2386,33 @@ struct FasmBackend
     // The PS interface tile's one enable; without it every fabric output on
     // the PS side is dead (segbits_int_intf_left_term_pss.db holds nothing
     // else).
+    // CONFIG_SITE (ICAPE3, STARTUPE3, BSCANE2, ...). A placed primitive is
+    // <tile>.<BEL>.IN_USE, plus the attributes characterised in
+    // 0-ultrascale-bits/designs/kv260_cfg_char; the bits are
+    // db-corrections/zynqusp/segbits_cfg_config.corrections.
+    void write_config_usp()
+    {
+        for (auto &cell : ctx->cells) {
+            CellInfo *ci = cell.second.get();
+            if (!ci->type.in(id_ICAP_TOP, id_ICAP_BOT, id_STARTUP, id_BSCAN, id_DNA_PORT, id_USR_ACCESS,
+                             id_FRAME_ECC, id_EFUSE_USR) ||
+                ci->bel == BelId())
+                continue;
+            std::string bel = ctx->getBelName(ci->bel)[1].str(ctx);
+            bel = bel.substr(bel.rfind('.') + 1);
+            push(uarch->tile_name(ci->bel.tile));
+            push(bel);
+            write_bit("IN_USE");
+            if (ci->type.in(id_ICAP_TOP, id_ICAP_BOT))
+                write_bit("ICAP_AUTO_SWITCH",
+                          str_or_default(ci->params, id_ICAP_AUTO_SWITCH, "DISABLE") == "ENABLE");
+            if (ci->type == id_STARTUP)
+                write_bit("PROG_USR", str_or_default(ci->params, id_PROG_USR, "FALSE") == "TRUE");
+            pop(2);
+        }
+        blank();
+    }
+
     void write_pss_intf_usp()
     {
         for (int tile : usp_pss_outputs_enabled) {
@@ -2578,6 +2614,7 @@ struct FasmBackend
             write_bram_usp();
             write_clocking_usp();
             write_pss_intf_usp();
+            write_config_usp();
             return;
         }
         write_logic();
