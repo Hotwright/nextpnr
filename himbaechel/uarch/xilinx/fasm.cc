@@ -306,6 +306,15 @@ struct FasmBackend
                 // FIXME: PPIPs missing for DSPs
                 return;
             }
+            if (boost::starts_with(tile_name, "CFG_CENTER_")) {
+                // Every routing pip in the configuration tiles is hard-wired: openXC7's
+                // prjxray-db ppips_cfg_center_{bot,mid,top}.db list all of them as "always"
+                // (13, 285 and 38 of 13, 285 and 38, in artix7, kintex7, spartan7 and
+                // zynq7 alike), and no segbits name one. hotc's xray-db-local has no
+                // ppips file for these tiles, so writing them makes fasm2frames stop at the
+                // first ("key ... not found") -- which an ICAPE2's 67 pins all are.
+                return;
+            }
             std::string orig_dst_name = dst_name;
             if (boost::starts_with(tile_name, "RIOI3_SING") || boost::starts_with(tile_name, "LIOI3_SING") ||
                 boost::starts_with(tile_name, "RIOI_SING")) {
@@ -1828,12 +1837,33 @@ struct FasmBackend
         pop();
     }
 
+    // ICAPE2. prjxray's 038-cfg fuzzer found two bits of configuration for it, both the port
+    // width, and neither tied to one of the tile's two ICAP sites: X32, the default, sets
+    // none. Its pins reach it through the interconnect alone, so write_routing covers them.
+    void write_icap(CellInfo *ci)
+    {
+        push(uarch->tile_name(ci->bel.tile));
+        push("ICAP");
+        auto width = str_or_default(ci->params, ctx->id("ICAP_WIDTH"), "X32");
+        if (width == "X8")
+            write_bit("ICAP_WIDTH_X8");
+        else if (width == "X16")
+            write_bit("ICAP_WIDTH_X16");
+        else if (width != "X32")
+            log_error("ICAPE2 '%s' has ICAP_WIDTH \"%s\"; it must be X8, X16 or X32.\n", ci->name.c_str(ctx),
+                      width.c_str());
+        pop(2);
+    }
+
     void write_ip()
     {
         for (auto &cell : ctx->cells) {
             CellInfo *ci = cell.second.get();
             if (ci->type == id_DSP48E1_DSP48E1) {
                 write_dsp_cell(ci);
+                blank();
+            } else if (ci->type == ctx->id("ICAP_ICAP")) {
+                write_icap(ci);
                 blank();
             }
         }

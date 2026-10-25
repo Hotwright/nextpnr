@@ -184,7 +184,7 @@ void XC7Packer::pack_gbs()
     // Make sure prerequisites are set up first
     for (auto &cell : ctx->cells) {
         CellInfo *ci = cell.second.get();
-        if (ci->type == id_PS7_PS7)
+        if (ci->type == id_PS7_PS7 || ci->type == ctx->id("ICAP_ICAP"))
             preplace_unique(ci);
         if (ci->type.in(id_PSEUDO_GND, id_PSEUDO_VCC))
             preplace_unique(ci);

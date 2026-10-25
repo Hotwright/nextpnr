@@ -432,6 +432,13 @@ void XC7Packer::pack_io()
 
     hrio_rules[id_PS7].new_type = id_PS7_PS7;
 
+    // The configuration port. Its site is ICAP, bel ICAP_ICAP (two per die, in the
+    // CFG_CENTER_MID tile); the bus pins I[31:0]/O[31:0] become the site's I0..I31/O0..O31
+    // through xform_cell's bracket stripping. Runtime ids, not constids.inc: the chipdb
+    // stores its extra ids after the compiled-in ones, so a new constid would shift them
+    // and every chipdb would have to be regenerated. Placed by pack_gbs, like the PS7.
+    hrio_rules[ctx->id("ICAPE2")].new_type = ctx->id("ICAP_ICAP");
+
     generic_xform(hrio_rules, true);
 
     for (auto &cell : ctx->cells) {
