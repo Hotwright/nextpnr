@@ -262,10 +262,10 @@ void get_tied_pins(Context *ctx, dict<IdString, dict<IdString, bool>> &tied_pins
             tied_pins[ram][ctx->id(std::string("ADDREN") + port)] = true;
             tied_pins[ram][ctx->id(std::string("CASDIMUX") + port)] = false;
             tied_pins[ram][ctx->id(std::string("CASDOMUX") + port)] = false;
-            if (ram == id_RAMB18E2) {
-                tied_pins[ram][ctx->id(std::string("CASDOMUXEN_") + port)] = true;
-                tied_pins[ram][ctx->id(std::string("CASOREGIMUXEN_") + port)] = true;
-            }
+            // Both primitives: Vivado ties these to VCC on a RAMB36E2 too, and
+            // left floating the output latch never loads (all-zero reads).
+            tied_pins[ram][ctx->id(std::string("CASDOMUXEN_") + port)] = true;
+            tied_pins[ram][ctx->id(std::string("CASOREGIMUXEN_") + port)] = true;
 
             tied_pins[ram][ctx->id(std::string("CASOREGIMUX") + port)] = false;
         }
