@@ -13,6 +13,7 @@ set(SOURCES
     pack_io.cc
     pack_io_usp.cc
     pack_carry_usp.cc
+    pack_bram_usp.cc
     pack_clocking_usp.cc
     pins.cc
     pins.h

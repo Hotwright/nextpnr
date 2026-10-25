@@ -1919,6 +1919,15 @@ struct FasmBackend
     }
 
     pool<int> usp_pss_outputs_enabled;
+    // (X, Y) of each INT_INTF_L row that a BRAM output leaves through.
+    pool<std::pair<int, int>> usp_bram_output_rows;
+
+    // The X/Y of a tile name such as BRAM_X19Y150.
+    static bool usp_tile_xy(const std::string &name, int &x, int &y)
+    {
+        auto p = name.rfind("_X");
+        return p != std::string::npos && std::sscanf(name.c_str() + p, "_X%dY%d", &x, &y) == 2;
+    }
 
     // UltraScale+ pips whose configuration is NOT a routing bit: mostly
     // route-throughs, selected by the passed site's own configuration, plus
@@ -1973,6 +1982,21 @@ struct FasmBackend
         // The row clock buffer itself has no feature; its input mux does.
         if (boost::starts_with(dst, "CLK_BUFCE_ROW_FSR") && boost::ends_with(dst, "_CLK_OUT"))
             return true;
+
+        // The BRAM tile's pin crossovers carry no bits: with the parameters
+        // written by write_bram_usp() every set bit in the tile is accounted
+        // for (designs/kv260_bram_spec against Vivado).
+        if (tt == "BRAM" && boost::starts_with(dst, "BRAM_BRAM_CORE_"))
+            return true;
+        // A BRAM output crossing into the fabric. INT_INTF_L has no frames;
+        // what it needs is the BRAM tile's per-row output enable, written by
+        // write_bram_usp() for each row recorded here.
+        if (tt == "INT_INTF_L" && boost::starts_with(dst, "LOGIC_OUTS_")) {
+            int x, y;
+            if (usp_tile_xy(uarch->tile_name(pip.tile), x, y))
+                usp_bram_output_rows.insert({x, y});
+            return true;
+        }
 
         return false;
     }
@@ -2363,15 +2387,195 @@ struct FasmBackend
         blank();
     }
 
+    // UltraScale+ block RAM. Feature names are prjuray's segbits_bram*.db
+    // plus 0-ultrascale-bits/db-corrections/zynqusp/segbits_bram.corrections
+    // (IN_USE, port widths, RSTREGBINV), which prjuray never solved.
+    // Characterised against Vivado in 0-ultrascale-bits/designs/kv260_bram_char.
+
+    // INIT_A/INIT_B/SRVAL_A/SRVAL_B of a RAMB18 as stored: {P1,P0,D15..D0},
+    // except that a 9-bit port's value arrives as {P1,D15..8,P0,D7..0}.
+    static uint64_t bram18_vec_usp(uint64_t v, int width)
+    {
+        if (width != 9)
+            return v;
+        return (((v >> 17) & 1) << 17) | (((v >> 8) & 1) << 16) | (((v >> 9) & 0xFF) << 8) | (v & 0xFF);
+    }
+
+    // The same for a RAMB36, split over the two halves: normalise to
+    // {P3..P0,D31..D0}, then data bit d goes to half d%2 bit d/2 and parity
+    // bit k to half k%2 bit 16+k/2.
+    static std::pair<uint64_t, uint64_t> bram36_vec_usp(uint64_t v, int width)
+    {
+        uint64_t d = 0, p = 0;
+        if (width == 9) {
+            for (int u = 0; u < 4; u++) {
+                d |= ((v >> (9 * u)) & 0xFF) << (8 * u);
+                p |= ((v >> (9 * u + 8)) & 1) << u;
+            }
+        } else if (width == 18) {
+            d = (v & 0xFFFF) | (((v >> 18) & 0xFFFF) << 16);
+            p = ((v >> 16) & 3) | (((v >> 34) & 3) << 2);
+        } else {
+            d = v & 0xFFFFFFFFULL;
+            p = (v >> 32) & 0xF;
+        }
+        uint64_t l = 0, u = 0;
+        for (int i = 0; i < 32; i++)
+            if ((d >> i) & 1)
+                ((i % 2) ? u : l) |= 1ULL << (i / 2);
+        for (int k = 0; k < 4; k++)
+            if ((p >> k) & 1)
+                ((k % 2) ? u : l) |= 1ULL << (16 + k / 2);
+        return {l, u};
+    }
+
+    void write_bram_width_usp(CellInfo *ci, const std::string &name, bool is_36)
+    {
+        int width = int_or_default(ci->params, ctx->id(name), 0);
+        int sdp = is_36 ? 72 : 36;
+        int full = is_36 ? 36 : 18;
+        if (width == 0)
+            width = full;
+        bool sdp_port = (name == "READ_WIDTH_A" || name == "WRITE_WIDTH_B");
+        if (width == sdp && sdp_port) {
+            write_bit(name + ".W" + std::to_string(full));
+            write_bit(name + "." + std::to_string(sdp));
+            return;
+        }
+        static const std::set<int> w18 = {1, 2, 4, 9, 18}, w36 = {1, 2, 4, 9, 18, 36};
+        if (!(is_36 ? w36 : w18).count(width))
+            log_error("%s '%s': unsupported %s %d\n", ci->type.c_str(ctx), ctx->nameOf(ci), name.c_str(), width);
+        // The all-clear code has no feature: width 1 on a RAMB18, 2 on a RAMB36.
+        if (width != (is_36 ? 2 : 1))
+            write_bit(name + ".W" + std::to_string(width));
+    }
+
+    void write_bram_cell_usp(int tile, CellInfo *ci, int half)
+    {
+        bool is_36 = ci->type == id_RAMB36E2_RAMB36E2;
+        IdString orig = ctx->id(ci->attrs.at(id_X_ORIG_TYPE).as_string());
+        // Settings with a RAMB36E2 feature covering both halves.
+        std::string site = is_36 ? "RAMB36E2" : (half == 0 ? "RAMB18E2_L" : "RAMB18E2_U");
+        auto str_param = [&](const char *name, const char *def) {
+            return str_or_default(ci->params, ctx->id(name), def);
+        };
+        int rw_a = int_or_default(ci->params, ctx->id("READ_WIDTH_A"), 0);
+        int ww_b = int_or_default(ci->params, id_WRITE_WIDTH_B, 0);
+        bool sdp = is_36 ? (rw_a == 72 || ww_b == 72) : (rw_a == 36 || ww_b == 36);
+
+        push(uarch->tile_name(tile));
+        push(site);
+        write_bit("IN_USE");
+        for (auto w : {"READ_WIDTH_A", "WRITE_WIDTH_A", "READ_WIDTH_B", "WRITE_WIDTH_B"})
+            write_bram_width_usp(ci, w, is_36);
+        write_bool_usp("CLKARDCLKINV", bool_or_default(ci->params, ctx->id("IS_CLKARDCLK_INVERTED"), false));
+        write_bool_usp("CLKBWRCLKINV", bool_or_default(ci->params, ctx->id("IS_CLKBWRCLK_INVERTED"), false));
+        for (auto &invpin : invertible_pins[orig]) {
+            bool inv = bool_or_default(ci->params, ctx->idf("IS_%s_INVERTED", invpin.c_str(ctx)), false);
+            if (invpin == id_RSTREGB)
+                write_bit("RSTREGBINV.V1", inv);
+            else
+                write_bool_usp(invpin.str(ctx) + "INV", inv);
+        }
+        // RSTREGB is in invertible_pins, so this was written above unless
+        // the RAM is SDP, where Vivado sets it too (port B has no output
+        // register to reset). There is no V0 feature.
+        if (sdp && !bool_or_default(ci->params, ctx->id("IS_RSTREGB_INVERTED"), false))
+            write_choice("RSTREGBINV", "V1");
+        // Vivado writes COMMON only when both clocks are on one net. On a
+        // RAMB36 the packer splits each clock into L and U bel pins.
+        auto clk_net = [&](const char *name) {
+            NetInfo *n = ci->getPort(ctx->id(name));
+            return n != nullptr ? n : ci->getPort(ctx->id(std::string(name) + "L"));
+        };
+        NetInfo *clka = clk_net("CLKARDCLK"), *clkb = clk_net("CLKBWRCLK");
+        write_choice("CLOCK_DOMAINS", (clka != nullptr && clka == clkb) ? "COMMON" : "INDEPENDENT");
+        write_bool_usp("DOA_REG", bool_or_default(ci->params, id_DOA_REG, false));
+        if (!is_36)
+            write_bool_usp("DOB_REG", bool_or_default(ci->params, id_DOB_REG, false));
+        write_choice("ENADDRENA", str_param("ENADDRENA", "FALSE"));
+        write_choice("ENADDRENB", str_param("ENADDRENB", "FALSE"));
+        write_choice("RDADDRCHANGEA", str_param("RDADDRCHANGEA", "FALSE"));
+        write_choice("RDADDRCHANGEB", str_param("RDADDRCHANGEB", "FALSE"));
+        write_choice("RSTREG_PRIORITY_A", str_param("RSTREG_PRIORITY_A", "RSTREG"));
+        write_choice("RSTREG_PRIORITY_B", str_param("RSTREG_PRIORITY_B", "RSTREG"));
+        write_choice("SLEEP_ASYNC", str_param("SLEEP_ASYNC", "FALSE"));
+        write_choice("WRITE_MODE_A", str_param("WRITE_MODE_A", "NO_CHANGE"));
+        write_choice("WRITE_MODE_B", str_param("WRITE_MODE_B", "NO_CHANGE"));
+        if (is_36)
+            write_choice("EN_ECC_WRITE", str_param("EN_ECC_WRITE", "FALSE"));
+        pop();
+
+        // Per-half: output register B, INIT_A/B, SRVAL_A/B and the contents.
+        for (int h = is_36 ? 0 : half; h <= (is_36 ? 1 : half); h++) {
+            push(h == 0 ? "RAMB18E2_L" : "RAMB18E2_U");
+            if (is_36)
+                write_bool_usp("DOB_REG", bool_or_default(ci->params, id_DOB_REG, false));
+            for (auto vec : {"INIT_A", "INIT_B", "SRVAL_A", "SRVAL_B"}) {
+                int width = int_or_default(ci->params, ctx->id(std::string("READ_WIDTH_") + vec[std::strlen(vec) - 1]), 0);
+                uint64_t v = 0;
+                if (ci->params.count(ctx->id(vec)))
+                    v = ci->params.at(ctx->id(vec)).as_int64();
+                uint64_t enc;
+                if (is_36) {
+                    // The packing at widths 1, 2 and 4 is not characterised.
+                    if (v != 0 && (width == 1 || width == 2 || width == 4))
+                        log_error("%s '%s': nonzero %s at width %d is not supported on UltraScale+\n",
+                                  ci->type.c_str(ctx), ctx->nameOf(ci), vec, width);
+                    auto lu = bram36_vec_usp(v, width);
+                    enc = h == 0 ? lu.first : lu.second;
+                } else {
+                    enc = bram18_vec_usp(v, width);
+                }
+                write_int_vector(std::string(vec) + "[17:0]", enc, 18);
+            }
+            write_bram_init(h, ci, is_36);
+            pop();
+        }
+        pop();
+    }
+
+    // Runs after write_routing(), which records the output rows.
+    void write_bram_usp()
+    {
+        for (int tile = 0; tile < ctx->chip_info->tile_insts.ssize(); tile++) {
+            const auto &bts = uarch->tile_status[tile].bts;
+            if (!bts)
+                continue;
+            // Row k of a BRAM tile is INT_INTF_L_X<x>Y<y+k>, checked for every
+            // BRAM tile on the xck26.
+            int x, y;
+            if (usp_tile_xy(uarch->tile_name(tile), x, y)) {
+                for (int k = 0; k < 5; k++) {
+                    if (usp_bram_output_rows.count({x, y + k})) {
+                        push(uarch->tile_name(tile));
+                        write_bit(stringf("ROW%d.OUTPUTS_ENABLED", k));
+                        pop();
+                    }
+                }
+            }
+            if (bts->cells[BEL_RAM36] != nullptr) {
+                write_bram_cell_usp(tile, bts->cells[BEL_RAM36], 0);
+            } else {
+                if (bts->cells[BEL_RAM18_L] != nullptr)
+                    write_bram_cell_usp(tile, bts->cells[BEL_RAM18_L], 0);
+                if (bts->cells[BEL_RAM18_U] != nullptr)
+                    write_bram_cell_usp(tile, bts->cells[BEL_RAM18_U], 1);
+            }
+            blank();
+        }
+    }
+
     void write_fasm()
     {
         get_invertible_pins(ctx, invertible_pins, uarch->usp);
         if (uarch->usp) {
-            // BRAM, the PLL/MMCM and the DSP are not ported yet (the packer
-            // rejects them); the CLE, the IO and the clock tracks are.
+            // The PLL/MMCM, the DSP, URAM and the BRAM FIFOs are not ported
+            // yet (the packer rejects them).
             write_logic();
             write_io_usp();
             write_routing();
+            write_bram_usp();
             write_clocking_usp();
             write_pss_intf_usp();
             return;

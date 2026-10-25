@@ -238,6 +238,9 @@ struct USPacker : public XilinxPacker
     void split_carry8s();
     void pack_carries();
 
+    // BRAM
+    void pack_bram();
+
     // Families of cell not yet ported to UltraScale+; error out rather than
     // mis-pack them.
     void check_unsupported();

@@ -294,7 +294,8 @@ void XilinxImpl::update_logic_bel(BelId bel, CellInfo *cell)
 void XilinxImpl::update_bram_bel(BelId bel, CellInfo *cell)
 {
     IdString type = ctx->getBelType(bel);
-    if (!type.in(id_RAMBFIFO18E2_RAMBFIFO18E2, id_RAMBFIFO36E2_RAMBFIFO36E2, id_RAMB18E2_RAMB18E2, id_FIFO36E2_FIFO36E2,
+    if (!type.in(id_RAMBFIFO18E2_RAMBFIFO18E2, id_RAMBFIFO36E2_RAMBFIFO36E2, id_RAMB18E2_RAMB18E2, id_RAMB36E2_RAMB36E2,
+                 id_FIFO36E2_FIFO36E2,
                  id_RAMBFIFO36E1_RAMBFIFO36E1, id_RAMB36E1_RAMB36E1, id_RAMB18E1_RAMB18E1))
         return;
     auto &tts = tile_status.at(bel.tile);

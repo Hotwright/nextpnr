@@ -843,6 +843,7 @@ void XilinxImpl::pack()
         packer.pack_carries();
         packer.pack_luts();
         packer.pack_dram();
+        packer.pack_bram();
         packer.pack_ffs();
         packer.finalise_muxfs();
         packer.pack_lutffs();

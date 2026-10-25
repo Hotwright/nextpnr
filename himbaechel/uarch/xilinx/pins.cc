@@ -127,6 +127,11 @@ void get_invertible_pins(Context *ctx, dict<IdString, pool<IdString>> &invertibl
     invertible_pins[id_RAMB36E1].insert(id_RSTREGARSTREG);
     invertible_pins[id_RAMB36E1].insert(id_RSTREGB);
     invertible_pins[id_BUFMRCE].insert(id_CE);
+    // xcup. The clocks are left out, as nextpnr-xilinx does. RSTREGBINV is
+    // not in prjuray-db; 0-ultrascale-bits/db-corrections adds it.
+    for (IdString ram : {id_RAMB18E2, id_RAMB36E2})
+        for (IdString pin : {id_ENARDEN, id_ENBWREN, id_RSTRAMARSTRAM, id_RSTRAMB, id_RSTREGARSTREG, id_RSTREGB})
+            invertible_pins[ram].insert(pin);
     for (int i = 0; i < 4; i++)
         invertible_pins[id_DSP48E1].insert(ctx->idf("ALUMODE[%d]", i));
     invertible_pins[id_DSP48E1].insert(id_CARRYIN);
@@ -414,11 +419,11 @@ void get_tied_pins(Context *ctx, dict<IdString, dict<IdString, bool>> &tied_pins
 
 // Get a list of logical pins that have both L and U bel pins that need
 // to be connected for a 36-bit BRAM
-void get_bram36_ul_pins(Context *ctx, std::vector<std::pair<IdString, std::vector<std::string>>> &ul_pins)
+void get_bram36_ul_pins(Context *ctx, std::vector<std::pair<IdString, std::vector<std::string>>> &ul_pins, bool usp)
 {
     BelId spec_bel;
     for (auto bel : ctx->getBels()) {
-        if (ctx->getBelType(bel) == id_RAMB36E1_RAMB36E1) {
+        if (ctx->getBelType(bel) == (usp ? id_RAMB36E2_RAMB36E2 : id_RAMB36E1_RAMB36E1)) {
             spec_bel = bel;
             break;
         }

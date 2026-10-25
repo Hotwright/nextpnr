@@ -97,8 +97,9 @@ void XilinxImpl::parse_xdc(const std::string &filename)
         auto split = split_to_args(str, false);
         if (split.size() < 1)
             log_error("failed to parse target (on line %d)\n", lineno);
-        if (split.front() != "get_ports")
-            log_error("targets other than 'get_ports' are not supported (on line %d)\n", lineno);
+        // get_cells takes an exact cell name, as get_ports does: no wildcards.
+        if (split.front() != "get_ports" && split.front() != "get_cells")
+            log_error("targets other than 'get_ports' or 'get_cells' are not supported (on line %d)\n", lineno);
         if (split.size() < 2)
             log_error("failed to parse target (on line %d)\n", lineno);
         IdString cellname = ctx->id(strip_quotes(split.at(1)));
