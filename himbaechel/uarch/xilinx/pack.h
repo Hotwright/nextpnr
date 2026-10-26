@@ -229,8 +229,10 @@ struct USPacker : public XilinxPacker
 
     // Clocking
     void prepare_clocking();
+    void pack_plls();
     void pack_gbs();
     void preplace_clocking();
+    void place_fabric_bufgce();
     void pack_clocking();
 
     // Carries
