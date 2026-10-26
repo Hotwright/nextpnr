@@ -54,7 +54,7 @@ struct FasmBackend
     std::ostream &out;
     std::vector<std::string> fasm_ctx;
     dict<int, std::vector<PipId>> pips_by_tile;
-    pool<int> outputs_enabled_tiles; // INT_INTF_R_PCIE4 tiles with OUTPUTS_ENABLED written
+    pool<int> outputs_enabled_tiles; // INT_INTF_R_PCIE4/L_CMT/L_IO tiles with OUTPUTS_ENABLED written
 
     dict<std::pair<int, int>, unsigned> lut_route_throughs;
 
@@ -2031,8 +2031,11 @@ struct FasmBackend
         // An INT_INTF_R_PCIE4 passes nothing from its site into the fabric
         // (LOGIC_OUTS_R -> LOGIC_OUTS_L) unless the tile's OUTPUTS_ENABLED is
         // set: without it an ICAPE3 reads as all-zero. Vivado sets it on
-        // exactly the tiles whose LOGIC_OUTS are used.
-        if (tt == "INT_INTF_R_PCIE4" && boost::starts_with(dst, "LOGIC_OUTS_L") &&
+        // exactly the tiles whose LOGIC_OUTS are used. The CMT column's
+        // interface tiles (LOGIC_OUTS_CMT -> LOGIC_OUTS_R: an MMCM's LOCKED)
+        // have the same bits (0-ultrascale-bits/designs/kv260_cmt_char).
+        if (((tt == "INT_INTF_R_PCIE4" && boost::starts_with(dst, "LOGIC_OUTS_L")) ||
+             ((tt == "INT_INTF_L_CMT" || tt == "INT_INTF_L_IO") && boost::starts_with(dst, "LOGIC_OUTS_R"))) &&
             outputs_enabled_tiles.insert(pip.tile).second)
             out << tile_name << ".OUTPUTS_ENABLED" << std::endl;
 
@@ -2412,6 +2415,38 @@ struct FasmBackend
         blank();
     }
 
+    // The CMT_L clock buffers' site attributes, as characterised in
+    // 0-ultrascale-bits/designs/kv260_cmt_char (segbits_cmt_l.corrections):
+    // <tile>.BUFGCE_X0Y<k>.CE_TYPE.ASYNC and .IS_CE_INVERTED. SYNC and the
+    // site being in use set no bits. IS_I_INVERTED sets none either (Vivado
+    // folds it into the driver), and CE_TYPE HARDSYNC is refused by Vivado's
+    // own timing library, so both are refused here rather than dropped.
+    void write_cmt_usp()
+    {
+        for (auto &cell : ctx->cells) {
+            CellInfo *ci = cell.second.get();
+            if (ci->type != id_BUFCE_BUFCE || ci->bel == BelId())
+                continue;
+            std::string tile = uarch->tile_name(ci->bel.tile);
+            if (!boost::starts_with(tile, "CMT_L"))
+                log_error("BUFGCE '%s' is on %s; only the CMT_L BUFGCE sites are characterised\n", ctx->nameOf(ci),
+                          ctx->nameOfBel(ci->bel));
+            std::string ce_type = str_or_default(ci->params, ctx->id("CE_TYPE"), "SYNC");
+            if (ce_type != "SYNC" && ce_type != "ASYNC")
+                log_error("BUFGCE '%s' has CE_TYPE %s; only SYNC and ASYNC are supported\n", ctx->nameOf(ci),
+                          ce_type.c_str());
+            if (bool_or_default(ci->params, ctx->id("IS_I_INVERTED"), false))
+                log_error("BUFGCE '%s' has IS_I_INVERTED set, which is not supported\n", ctx->nameOf(ci));
+            push(tile);
+            push(usp_site_name(uarch->get_bel_site(ci->bel)));
+            if (ce_type == "ASYNC")
+                write_choice("CE_TYPE", "ASYNC");
+            write_bit("IS_CE_INVERTED", bool_or_default(ci->params, ctx->id("IS_CE_INVERTED"), false));
+            pop(2);
+        }
+        blank();
+    }
+
     void write_pss_intf_usp()
     {
         for (int tile : usp_pss_outputs_enabled) {
@@ -2612,6 +2647,7 @@ struct FasmBackend
             write_routing();
             write_bram_usp();
             write_clocking_usp();
+            write_cmt_usp();
             write_pss_intf_usp();
             write_config_usp();
             return;
