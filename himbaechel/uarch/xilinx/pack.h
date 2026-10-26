@@ -232,6 +232,7 @@ struct USPacker : public XilinxPacker
     void pack_plls();
     void pack_gbs();
     void preplace_clocking();
+    void place_cmt();
     void place_fabric_bufgce();
     void pack_clocking();
 

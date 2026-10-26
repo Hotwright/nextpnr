@@ -29,6 +29,7 @@
 #include "log.h"
 #include "nextpnr.h"
 #include "pins.h"
+#include "usp_drp.h"
 #include "util.h"
 
 #include "xilinx.h"
@@ -2426,6 +2427,82 @@ struct FasmBackend
     // inputs' IS_I*_INVERTED set none either (Vivado folds them into the
     // driver), and HARDSYNC is refused by Vivado's own timing library, so all
     // of those are refused here rather than dropped.
+    // UltraScale+ MMCM/PLL (0-ultrascale-bits/designs/kv260_mmcm_char):
+    // IN_USE, the pin polarities, STARTUP_WAIT, a location bit, the DRP
+    // registers (usp_drp.h), and the ties Vivado makes inside the CMT for
+    // internal feedback and an unused CLKIN2. Feature names are
+    // segbits_cmt_l.corrections'.
+    void write_pll_usp(CellInfo *ci)
+    {
+        bool mmcm = ci->type == id_MMCM_MMCM_TOP;
+        std::string tile = uarch->tile_name(ci->bel.tile);
+        std::string site = usp_site_name(uarch->get_bel_site(ci->bel));
+        if (!boost::starts_with(tile, "CMT_L") || (mmcm ? site != "MMCM_X0Y0" : (site != "PLL_X0Y0" && site != "PLL_X0Y1")))
+            log_error("'%s' is on %s; only the CMT_L MMCM/PLL sites are characterised\n", ctx->nameOf(ci),
+                      ctx->nameOfBel(ci->bel));
+        // The CMT's row, counted from the bottom by the tile name's Y. Vivado
+        // sets ROW_MID[0] (DRP 0x00 bit 0) from the routed CLKIN delay, in
+        // bands of about 270 ps (kv260_mmcm_char/delay.tcl, the root sweep),
+        // which needs a delay model nextpnr has no US+ data for. The two
+        // middle rows set it with the usual clock root; kv260_mmcm_test
+        // locks and runs at the predicted rates with it either way.
+        auto name_y = [](const std::string &name) { return std::stoi(name.substr(name.rfind('Y') + 1)); };
+        IdString cmt_l = IdString(chip_tile_info(ctx->chip_info, ci->bel.tile).type_name);
+        int row = 0;
+        for (int t = 0; t < ctx->chip_info->tile_insts.ssize(); t++)
+            if (IdString(chip_tile_info(ctx->chip_info, t).type_name) == cmt_l &&
+                name_y(uarch->tile_name(t)) < name_y(tile))
+                row++;
+        auto inv = [&](const std::string &pin) {
+            return bool_or_default(ci->params, ctx->id("IS_" + pin + "_INVERTED"), false);
+        };
+        // ZINV_<pin> is set when the pin, left unrouted (tied), reads 0.
+        auto zinv = [&](const std::string &pin) {
+            return !((int_or_default(ci->params, ctx->id("X_TIE_" + pin), 0) != 0) ^ inv(pin));
+        };
+        UspDrp::Cell c;
+        c.mmcm = mmcm;
+        c.num = [&](const std::string &k, double d) { return float_or_default(ci, k, d); };
+        c.str = [&](const std::string &k, const std::string &d) { return str_or_default(ci->params, ctx->id(k), d); };
+        c.connected = [&](const std::string &o) {
+            NetInfo *n = ci->getPort(ctx->id(o));
+            return n != nullptr && n->users.entries() > 0;
+        };
+        auto regs = UspDrp::registers(c);
+        if (regs.empty())
+            log_error("'%s': CLKFBOUT_MULT outside the lock/filter tables\n", ctx->nameOf(ci));
+
+        push(tile);
+        push(site);
+        write_bit("IN_USE");
+        // A tied RST is unrouted, like PWRDWN: the bit then says it reads 0.
+        write_bit("IS_RST_INVERTED", ci->params.count(ctx->id("X_TIE_RST")) ? zinv("RST") : inv("RST"));
+        write_bit("ZINV_PWRDWN", zinv("PWRDWN"));
+        if (mmcm) {
+            write_bit("IS_CLKINSEL_INVERTED", inv("CLKINSEL"));
+            write_bit("ZINV_PSEN", zinv("PSEN"));
+            write_bit("ZINV_PSINCDEC", zinv("PSINCDEC"));
+        }
+        write_bit("STARTUP_WAIT", str_or_default(ci->params, ctx->id("STARTUP_WAIT"), "FALSE") == "TRUE");
+        bool mid = row == 1 || row == 2;
+        write_bit("ROW_MID[0]", mid);
+        if (mmcm)
+            write_bit("ROW_MID[1]"); // set in mid rows, and whenever CLKIN2 is unused (always, here)
+        for (auto &r : regs)
+            write_int_vector(r.first + "[15:0]", r.second, 16);
+        pop();
+        if (mmcm) {
+            write_bit("PIP.CMT_MMCM_WITH_MEM_1_CLKFBIN.VCC_WIRE52");
+            write_bit("PIP.CMT_MMCM_WITH_MEM_1_CLKIN2.VCC_WIRE");
+        } else {
+            bool odd = site == "PLL_X0Y1";
+            std::string mux = odd ? "CLK_CMT_MUX_24_ENC_59_CLK_OUT" : "CLK_CMT_MUX_24_ENC_57_CLK_OUT";
+            write_bit(std::string("PIP.CMT_TXPLL_WITH_MEM_") + (odd ? "87" : "86") + "_CLKFBIN." + mux);
+            write_bit("PIP." + mux + ".VCC_WIRE");
+        }
+        pop();
+    }
+
     void write_cmt_usp()
     {
         auto refuse_if = [&](CellInfo *ci, bool cond, const char *what) {
@@ -2438,6 +2515,8 @@ struct FasmBackend
         };
         for (auto &cell : ctx->cells) {
             CellInfo *ci = cell.second.get();
+            if (ci->type.in(id_MMCM_MMCM_TOP, id_PLL_PLL_TOP) && ci->bel != BelId())
+                write_pll_usp(ci);
             if (!ci->type.in(id_BUFCE_BUFCE, id_BUFGCE_DIV_BUFGCE_DIV, id_BUFGCTRL) || ci->bel == BelId())
                 continue;
             std::string tile = uarch->tile_name(ci->bel.tile);

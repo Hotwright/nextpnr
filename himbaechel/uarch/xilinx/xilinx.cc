@@ -70,6 +70,8 @@ po::options_description XilinxImpl::getUArchOptions()
     po::options_description specific("Xilinx specific options");
     specific.add_options()("fasm", po::value<std::string>(), "fasm bitstream output file");
     specific.add_options()("xdc", po::value<std::string>(), "name of constraints file");
+    specific.add_options()("unverified_cmt", po::value<std::string>(),
+                           "UltraScale+: let MMCM/PLL through before they are verified against Vivado");
     return specific;
 }
 
@@ -162,21 +164,35 @@ void XilinxImpl::init(Context *ctx)
     //  - HROUTE_0_t -> CMT_MUX_24_ENC, an HROUTE track coming back down into
     //    the buffers. Only track 0 (the BUFG_PS) has been characterised.
     // Both would be dropped from the FASM, leaving the buffer unconnected.
+    // An MMCM/PLL clock input is characterised one way only
+    // (designs/kv260_mmcm_char): CLKIN1 <- MUX_24_ENC_50, PLL CLKIN <-
+    // MUX_24_ENC_60/63, each mux <- HDISTR_0_0. CLKIN2 and the feedback
+    // inputs (with their muxes 53/57/59) are never routed: the FASM writer
+    // ties them, as Vivado does for internal feedback.
     if (usp) {
         cmt_l_type = ctx->id("CMT_L");
         for (int i = 0; i < ctx->chip_info->tile_insts.ssize(); i++) {
             const auto &ti = chip_tile_info(ctx->chip_info, i);
             if (IdString(ti.type_name) != cmt_l_type)
                 continue;
-            std::regex bypass("CLK_BUFGCE_(\\d+)_CLK_IN"), mux24("CLK_CMT_MUX_24_ENC_\\d+_CLK_OUT"),
+            std::regex bypass("CLK_BUFGCE_(\\d+)_CLK_IN"), mux24("CLK_CMT_MUX_24_ENC_(\\d+)_CLK_OUT"),
                     hroute("CLK_HROUTE_0_(\\d+)");
             for (int p = 0; p < ti.pips.ssize(); p++) {
                 std::string src = IdString(ti.wires[ti.pips[p].src_wire].name).str(ctx);
                 std::string dst = IdString(ti.wires[ti.pips[p].dst_wire].name).str(ctx);
-                std::smatch m;
+                std::smatch m, d;
                 if (std::regex_match(src, m, bypass) && dst == "CLK_BUFGCE_" + m[1].str() + "_CLK_OUT")
                     cmt_l_blocked_pips.insert(p);
                 else if (std::regex_match(dst, mux24) && std::regex_match(src, m, hroute) && m[1].str() != "0")
+                    cmt_l_blocked_pips.insert(p);
+                else if (std::regex_match(dst, d, mux24)) {
+                    int k = std::stoi(d[1].str());
+                    if (k == 57 || k == 59 || ((k == 50 || k == 53 || k == 60 || k == 63) && src != "CLK_HDISTR_0_0"))
+                        cmt_l_blocked_pips.insert(p);
+                } else if (dst == "CMT_MMCM_WITH_MEM_1_CLKIN2" || boost::ends_with(dst, "_CLKFBIN") ||
+                           (dst == "CMT_MMCM_WITH_MEM_1_CLKIN1" && src != "CLK_CMT_MUX_24_ENC_50_CLK_OUT") ||
+                           (dst == "CMT_TXPLL_WITH_MEM_86_CLKIN" && src != "CLK_CMT_MUX_24_ENC_60_CLK_OUT") ||
+                           (dst == "CMT_TXPLL_WITH_MEM_87_CLKIN" && src != "CLK_CMT_MUX_24_ENC_63_CLK_OUT"))
                     cmt_l_blocked_pips.insert(p);
             }
             log_info("Blocked %d uncharacterised CMT_L clock pips.\n", int(cmt_l_blocked_pips.size()));

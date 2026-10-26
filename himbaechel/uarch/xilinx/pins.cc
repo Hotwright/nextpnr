@@ -367,6 +367,29 @@ void get_tied_pins(Context *ctx, dict<IdString, dict<IdString, bool>> &tied_pins
     tied_pins[id_PLLE2_ADV][id_PWRDWN] = false;
     tied_pins[id_PLLE2_ADV][id_RST] = false;
 
+    // UltraScale+ MMCM/PLL. Vivado routes ground to the DRP pins, PSCLK,
+    // CDDCREQ and CLKOUTPHYEN (0-ultrascale-bits/designs/kv260_mmcm_char/
+    // pins.tcl); it leaves PWRDWN/PSEN/PSINCDEC unrouted and sets them by
+    // their ZINV bits, which USPacker::pack_plls takes over from the tie.
+    // Not invertible pins: a tie-0 stays a ground route, as in Vivado.
+    for (auto t : {id_MMCME4_ADV, id_PLLE4_ADV}) {
+        for (int i = 0; i < 7; i++)
+            tied_pins[t][ctx->id("DADDR[" + std::to_string(i) + "]")] = false;
+        for (int i = 0; i < 16; i++)
+            tied_pins[t][ctx->id("DI[" + std::to_string(i) + "]")] = false;
+        tied_pins[t][id_DCLK] = false;
+        tied_pins[t][id_DEN] = false;
+        tied_pins[t][id_DWE] = false;
+        tied_pins[t][id_PWRDWN] = false;
+        tied_pins[t][id_RST] = false;
+    }
+    tied_pins[id_MMCME4_ADV][id_CLKINSEL] = true;
+    tied_pins[id_MMCME4_ADV][id_PSCLK] = false;
+    tied_pins[id_MMCME4_ADV][id_PSEN] = false;
+    tied_pins[id_MMCME4_ADV][id_PSINCDEC] = false;
+    tied_pins[id_MMCME4_ADV][id_CDDCREQ] = false;
+    tied_pins[id_PLLE4_ADV][ctx->id("CLKOUTPHYEN")] = false;
+
     // Misc clock buffers
     tied_pins[id_BUFGCE_DIV][id_CE] = true;
     tied_pins[id_BUFGCE_DIV][id_CLR] = false;
