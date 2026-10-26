@@ -84,6 +84,11 @@ struct XilinxImpl : HimbaechelAPI
     // the part name; everything family-specific branches on it.
     bool usp = false;
 
+    // UltraScale+: CMT_L pips (by index in the tile type) the router must not
+    // take because no bits are known for them. See init().
+    IdString cmt_l_type;
+    pool<int32_t> cmt_l_blocked_pips;
+
 
     struct LogicTileStatus
     {

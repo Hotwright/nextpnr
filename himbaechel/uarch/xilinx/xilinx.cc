@@ -153,6 +153,36 @@ void XilinxImpl::init(Context *ctx)
         auto extra_data = tile_extra_data(i);
         tile_status.at(i).site_variant.resize(extra_data->sites.ssize());
     }
+
+    // Two kinds of CMT_L pip have no bits in the database, and the router
+    // finds both when it looks for a way to fan one fabric clock out to
+    // several buffers (designs/kv260_bufgdiv_test):
+    //  - BUFGCE_k CLK_IN -> CLK_OUT, a route-through of an unused BUFGCE.
+    //    Vivado never uses it in the cmt_char specimens.
+    //  - HROUTE_0_t -> CMT_MUX_24_ENC, an HROUTE track coming back down into
+    //    the buffers. Only track 0 (the BUFG_PS) has been characterised.
+    // Both would be dropped from the FASM, leaving the buffer unconnected.
+    if (usp) {
+        cmt_l_type = ctx->id("CMT_L");
+        for (int i = 0; i < ctx->chip_info->tile_insts.ssize(); i++) {
+            const auto &ti = chip_tile_info(ctx->chip_info, i);
+            if (IdString(ti.type_name) != cmt_l_type)
+                continue;
+            std::regex bypass("CLK_BUFGCE_(\\d+)_CLK_IN"), mux24("CLK_CMT_MUX_24_ENC_\\d+_CLK_OUT"),
+                    hroute("CLK_HROUTE_0_(\\d+)");
+            for (int p = 0; p < ti.pips.ssize(); p++) {
+                std::string src = IdString(ti.wires[ti.pips[p].src_wire].name).str(ctx);
+                std::string dst = IdString(ti.wires[ti.pips[p].dst_wire].name).str(ctx);
+                std::smatch m;
+                if (std::regex_match(src, m, bypass) && dst == "CLK_BUFGCE_" + m[1].str() + "_CLK_OUT")
+                    cmt_l_blocked_pips.insert(p);
+                else if (std::regex_match(dst, mux24) && std::regex_match(src, m, hroute) && m[1].str() != "0")
+                    cmt_l_blocked_pips.insert(p);
+            }
+            log_info("Blocked %d uncharacterised CMT_L clock pips.\n", int(cmt_l_blocked_pips.size()));
+            break;
+        }
+    }
 }
 
 SiteIndex XilinxImpl::get_bel_site(BelId bel) const
@@ -311,6 +341,9 @@ bool XilinxImpl::is_pip_unavail(PipId pip) const
     const auto &pip_data = chip_pip_info(ctx->chip_info, pip);
     const auto &extra_data = *reinterpret_cast<const XlnxPipExtraDataPOD *>(pip_data.extra_data.get());
     unsigned pip_type = pip_data.flags;
+    if (!cmt_l_blocked_pips.empty() && cmt_l_blocked_pips.count(pip.index) &&
+        IdString(chip_tile_info(ctx->chip_info, pip.tile).type_name) == cmt_l_type)
+        return true;
     if (pip_type == PIP_SITE_ENTRY) {
         WireId dst = ctx->getPipDstWire(pip);
         if (ctx->getWireType(dst) == id_INTENT_SITE_GND) {

@@ -183,7 +183,7 @@ void USPacker::check_unsupported()
         CellInfo *ci = cell.second.get();
         if (ci->type.in(id_IDDRE1, id_ODDRE1, id_ISERDESE3, id_OSERDESE3, id_IDELAYE3, id_ODELAYE3, id_IDELAYCTRL,
                         id_FIFO18E2, id_FIFO36E2, id_URAM288, id_URAM288_BASE, id_DSP48E2, id_MMCME4_ADV,
-                        id_MMCME4_BASIC, id_PLLE4_ADV, id_PLLE4_BASIC, id_BUFGCE_DIV, id_BUFGCTRL))
+                        id_MMCME4_BASIC, id_PLLE4_ADV, id_PLLE4_BASIC))
             log_error("Cell '%s' of type %s is not supported on UltraScale+ in himbaechel yet\n", ctx->nameOf(ci),
                       ci->type.c_str(ctx));
     }

@@ -2416,32 +2416,67 @@ struct FasmBackend
     }
 
     // The CMT_L clock buffers' site attributes, as characterised in
-    // 0-ultrascale-bits/designs/kv260_cmt_char (segbits_cmt_l.corrections):
-    // <tile>.BUFGCE_X0Y<k>.CE_TYPE.ASYNC and .IS_CE_INVERTED. SYNC and the
-    // site being in use set no bits. IS_I_INVERTED sets none either (Vivado
-    // folds it into the driver), and CE_TYPE HARDSYNC is refused by Vivado's
-    // own timing library, so both are refused here rather than dropped.
+    // 0-ultrascale-bits/designs/kv260_cmt_char (segbits_cmt_l.corrections),
+    // each <tile>.<SITE_XnYm>.<ATTR>:
+    //   BUFGCE      CE_TYPE.ASYNC, IS_CE_INVERTED
+    //   BUFGCE_DIV  BUFGCE_DIVIDE.D<n> (DIVIDE-1 in three bits), IS_CE_INVERTED,
+    //               IS_CLR_INVERTED
+    //   BUFGCTRL    INIT_OUT, PRESELECT_I1, IS_{CE,S,IGNORE}{0,1}_INVERTED
+    // A site in use, CE_TYPE SYNC and PRESELECT_I0 set no bits. The clock
+    // inputs' IS_I*_INVERTED set none either (Vivado folds them into the
+    // driver), and HARDSYNC is refused by Vivado's own timing library, so all
+    // of those are refused here rather than dropped.
     void write_cmt_usp()
     {
+        auto refuse_if = [&](CellInfo *ci, bool cond, const char *what) {
+            if (cond)
+                log_error("%s '%s': %s is not supported on UltraScale+\n", ci->type.c_str(ctx), ctx->nameOf(ci),
+                          what);
+        };
+        auto param_bool = [&](CellInfo *ci, const std::string &name) {
+            return bool_or_default(ci->params, ctx->id(name), false);
+        };
         for (auto &cell : ctx->cells) {
             CellInfo *ci = cell.second.get();
-            if (ci->type != id_BUFCE_BUFCE || ci->bel == BelId())
+            if (!ci->type.in(id_BUFCE_BUFCE, id_BUFGCE_DIV_BUFGCE_DIV, id_BUFGCTRL) || ci->bel == BelId())
                 continue;
             std::string tile = uarch->tile_name(ci->bel.tile);
             if (!boost::starts_with(tile, "CMT_L"))
-                log_error("BUFGCE '%s' is on %s; only the CMT_L BUFGCE sites are characterised\n", ctx->nameOf(ci),
+                log_error("'%s' is on %s; only the CMT_L clock buffer sites are characterised\n", ctx->nameOf(ci),
                           ctx->nameOfBel(ci->bel));
-            std::string ce_type = str_or_default(ci->params, ctx->id("CE_TYPE"), "SYNC");
-            if (ce_type != "SYNC" && ce_type != "ASYNC")
-                log_error("BUFGCE '%s' has CE_TYPE %s; only SYNC and ASYNC are supported\n", ctx->nameOf(ci),
-                          ce_type.c_str());
-            if (bool_or_default(ci->params, ctx->id("IS_I_INVERTED"), false))
-                log_error("BUFGCE '%s' has IS_I_INVERTED set, which is not supported\n", ctx->nameOf(ci));
             push(tile);
             push(usp_site_name(uarch->get_bel_site(ci->bel)));
-            if (ce_type == "ASYNC")
-                write_choice("CE_TYPE", "ASYNC");
-            write_bit("IS_CE_INVERTED", bool_or_default(ci->params, ctx->id("IS_CE_INVERTED"), false));
+            if (ci->type == id_BUFCE_BUFCE) {
+                std::string ce_type = str_or_default(ci->params, ctx->id("CE_TYPE"), "SYNC");
+                refuse_if(ci, ce_type != "SYNC" && ce_type != "ASYNC", "CE_TYPE other than SYNC/ASYNC");
+                refuse_if(ci, param_bool(ci, "IS_I_INVERTED"), "IS_I_INVERTED");
+                if (ce_type == "ASYNC")
+                    write_choice("CE_TYPE", "ASYNC");
+                write_bit("IS_CE_INVERTED", param_bool(ci, "IS_CE_INVERTED"));
+            } else if (ci->type == id_BUFGCE_DIV_BUFGCE_DIV) {
+                int divide = int_or_default(ci->params, ctx->id("BUFGCE_DIVIDE"), 1);
+                refuse_if(ci, divide < 1 || divide > 8, "BUFGCE_DIVIDE outside 1-8");
+                refuse_if(ci, str_or_default(ci->params, ctx->id("CE_TYPE"), "SYNC") != "SYNC",
+                          "CE_TYPE other than SYNC");
+                refuse_if(ci, param_bool(ci, "IS_I_INVERTED"), "IS_I_INVERTED");
+                if (divide > 1)
+                    write_choice("BUFGCE_DIVIDE", "D" + std::to_string(divide));
+                write_bit("IS_CE_INVERTED", param_bool(ci, "IS_CE_INVERTED"));
+                write_bit("IS_CLR_INVERTED", param_bool(ci, "IS_CLR_INVERTED"));
+            } else {
+                for (auto ce : {"CE_TYPE_CE0", "CE_TYPE_CE1"})
+                    refuse_if(ci, str_or_default(ci->params, ctx->id(ce), "SYNC") != "SYNC",
+                              "CE_TYPE_CE0/CE1 other than SYNC");
+                refuse_if(ci, param_bool(ci, "IS_I0_INVERTED") || param_bool(ci, "IS_I1_INVERTED"),
+                          "IS_I0_INVERTED/IS_I1_INVERTED");
+                bool pre0 = str_or_default(ci->params, ctx->id("PRESELECT_I0"), "FALSE") == "TRUE";
+                bool pre1 = str_or_default(ci->params, ctx->id("PRESELECT_I1"), "FALSE") == "TRUE";
+                refuse_if(ci, pre0 && pre1, "PRESELECT_I0 and PRESELECT_I1 both TRUE");
+                write_bit("INIT_OUT", int_or_default(ci->params, ctx->id("INIT_OUT"), 0) != 0);
+                write_bit("PRESELECT_I1", pre1);
+                for (auto pin : {"CE0", "CE1", "S0", "S1", "IGNORE0", "IGNORE1"})
+                    write_bit(std::string("IS_") + pin + "_INVERTED", param_bool(ci, std::string("IS_") + pin + "_INVERTED"));
+            }
             pop(2);
         }
         blank();
