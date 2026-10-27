@@ -55,6 +55,9 @@ void get_invertible_pins(Context *ctx, dict<IdString, pool<IdString>> &invertibl
     if (usp)
         invertible_pins[id_FDPE].insert(id_PRE);
 
+    if (usp)
+        for (IdString p : {id_CLK, id_EN_A, id_EN_B, id_RDB_WR_A, id_RDB_WR_B, id_RST_A, id_RST_B})
+            invertible_pins[id_URAM288].insert(p);
     invertible_pins[id_SRL16E].insert(id_CLK);
     invertible_pins[id_SRLC32E].insert(id_CLK);
     invertible_pins[id_BUFGCE].insert(id_CE);
@@ -394,6 +397,25 @@ void get_tied_pins(Context *ctx, dict<IdString, dict<IdString, bool>> &tied_pins
     tied_pins[id_BUFGCE_DIV][id_CE] = true;
     tied_pins[id_BUFGCE_DIV][id_CLR] = false;
     tied_pins[id_BUFGCE][id_CE] = true;
+
+    // URAM288 (nextpnr-xilinx, by experiment): an open input takes the
+    // primitive default.
+    for (std::string port : {"A", "B"}) {
+        tied_pins[id_URAM288][ctx->id("RST_" + port)] = false;
+        tied_pins[id_URAM288][ctx->id("RDB_WR_" + port)] = false;
+        tied_pins[id_URAM288][ctx->id("OREG_CE_" + port)] = true;
+        tied_pins[id_URAM288][ctx->id("OREG_ECC_CE_" + port)] = true;
+        tied_pins[id_URAM288][ctx->id("EN_" + port)] = true;
+        tied_pins[id_URAM288][ctx->id("INJECT_SBITERR_" + port)] = false;
+        tied_pins[id_URAM288][ctx->id("INJECT_DBITERR_" + port)] = false;
+        for (int i = 0; i < 9; i++)
+            tied_pins[id_URAM288][ctx->id("BWE_" + port + "[" + std::to_string(i) + "]")] = true;
+        for (int i = 0; i < 23; i++)
+            tied_pins[id_URAM288][ctx->id("ADDR_" + port + "[" + std::to_string(i) + "]")] = false;
+        for (int i = 0; i < 72; i++)
+            tied_pins[id_URAM288][ctx->id("DIN_" + port + "[" + std::to_string(i) + "]")] = false;
+    }
+    tied_pins[id_URAM288][id_SLEEP] = false;
 
     // DSP48E2: an input the netlist leaves open takes the primitive's default,
     // as Vivado ties it (kv260_dsp_test reference: an open D is routed from

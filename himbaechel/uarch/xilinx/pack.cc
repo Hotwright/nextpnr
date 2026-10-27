@@ -606,7 +606,9 @@ void XilinxPacker::pack_constants()
         if (!cval && invertible_pins.count(ci->type) && invertible_pins.at(ci->type).count(pname)) {
             // Invertible pins connected to zero are optimised to a connection to Vcc (which is easier to route)
             // and an inversion
-            ci->params[ctx->idf("IS_%s_INVERTED", pname.c_str(ctx))] = Property(1);
+            // Toggled, not set: a pin already inverted and tied to 0 is a 1.
+            IdString inv = ctx->idf("IS_%s_INVERTED", pname.c_str(ctx));
+            ci->params[inv] = Property(int_or_default(ci->params, inv, 0) == 0 ? 1 : 0);
             cval = true;
         }
 
@@ -845,6 +847,7 @@ void XilinxImpl::pack()
         packer.pack_dram();
         packer.pack_bram();
         packer.pack_dsps();
+        packer.pack_uram();
         packer.pack_config();
         packer.pack_ffs();
         packer.finalise_muxfs();

@@ -30,6 +30,7 @@
 #include "nextpnr.h"
 #include "pins.h"
 #include "usp_drp.h"
+#include "usp_uram_rows.h"
 #include "util.h"
 
 #include "xilinx.h"
@@ -2620,6 +2621,73 @@ struct FasmBackend
         pop();
     }
 
+    // URAM288 (0-ultrascale-bits designs/kv260_uram_char: segbits from 30
+    // random specimens, every tile predicted exactly). Features are per site,
+    // URAM288_X0Y0..3 within the tile. SELF_MASK is stored inverted
+    // (ZSELF_MASK); IS_<pin>_INVERTED is the inversion in effect, a tied pin
+    // having been fed VCC by pack_constants. AVG_CONS_INACTIVE_CYCLES sets
+    // no bits.
+    void write_uram_usp()
+    {
+        // A used output turns on its INT row's interface on its side
+        // (OUT_<A|B>_ROW<r>, a tile feature): usp_uram_rows.h.
+        dict<std::pair<int, IdString>, std::pair<char, int>> out_row;
+        for (const auto &r : usp_uram_rows)
+            out_row[{r.site, ctx->id(r.pin)}] = {r.side, r.row};
+        dict<int, std::set<std::pair<char, int>>> tile_rows;
+        for (auto &cell : ctx->cells) {
+            CellInfo *ci = cell.second.get();
+            if (ci->type != id_BEL_URAM288 || ci->bel == BelId())
+                continue;
+            auto str = [&](const char *k, const char *def) { return str_or_default(ci->params, ctx->id(k), def); };
+            auto num = [&](const std::string &k, int64_t def) -> int64_t {
+                auto found = ci->params.find(ctx->id(k));
+                if (found == ci->params.end())
+                    return def;
+                return found->second.is_string ? std::stoll(found->second.as_string()) : found->second.as_int64();
+            };
+            auto site = uarch->get_bel_site(ci->bel);
+            int pos = uarch->tile_extra_data(site.tile)->sites[site.site].rel_y;
+            for (auto &port : ci->ports) {
+                if (port.second.type != PORT_OUT || port.second.net == nullptr || port.second.net->users.empty())
+                    continue;
+                auto found = out_row.find({pos, port.first});
+                if (found != out_row.end())
+                    tile_rows[ci->bel.tile].insert(found->second);
+            }
+            push(uarch->tile_name(ci->bel.tile));
+            push(usp_site_name(site));
+            write_bit("IN_USE");
+            for (std::string p : {"A", "B"}) {
+                write_bit("BWE_MODE_" + p + ".PARITY_INDEPENDENT",
+                          str(("BWE_MODE_" + p).c_str(), "PARITY_INTERLEAVED") == "PARITY_INDEPENDENT");
+                for (std::string b : {"EN_ECC_RD_", "EN_ECC_WR_", "IREG_PRE_", "OREG_", "OREG_ECC_", "USE_EXT_CE_"})
+                    write_bit(b + p + ".TRUE", str((b + p).c_str(), "FALSE") == "TRUE");
+                write_bit("RST_MODE_" + p + ".ASYNC", str(("RST_MODE_" + p).c_str(), "SYNC") == "ASYNC");
+                int64_t addr = num("SELF_ADDR_" + p, 0), mask = num("SELF_MASK_" + p, 0x7ff);
+                for (int i = 0; i < 11; i++) {
+                    write_bit(stringf("SELF_ADDR_%s[%d]", p.c_str(), i), (addr >> i) & 1);
+                    write_bit(stringf("ZSELF_MASK_%s[%d]", p.c_str(), i), !((mask >> i) & 1));
+                }
+            }
+            write_bit("EN_AUTO_SLEEP_MODE.TRUE", str("EN_AUTO_SLEEP_MODE", "FALSE") == "TRUE");
+            int64_t lat = num("AUTO_SLEEP_LATENCY", 8);
+            for (int i = 0; i < 4; i++)
+                write_bit(stringf("AUTO_SLEEP_LATENCY[%d]", i), (lat >> i) & 1);
+            for (std::string pin : {"CLK", "EN_A", "EN_B", "RDB_WR_A", "RDB_WR_B", "RST_A", "RST_B"})
+                write_bit("IS_" + pin + "_INVERTED", num("IS_" + pin + "_INVERTED", 0) != 0);
+            pop(2);
+            blank();
+        }
+        for (auto &t : tile_rows) {
+            push(uarch->tile_name(t.first));
+            for (auto &r : t.second)
+                write_bit(stringf("OUT_%c_ROW%d", r.first, r.second));
+            pop();
+            blank();
+        }
+    }
+
     void write_cmt_usp()
     {
         auto refuse_if = [&](CellInfo *ci, bool cond, const char *what) {
@@ -2871,8 +2939,8 @@ struct FasmBackend
     {
         get_invertible_pins(ctx, invertible_pins, uarch->usp);
         if (uarch->usp) {
-            // The PLL/MMCM, the DSP, URAM and the BRAM FIFOs are not ported
-            // yet (the packer rejects them).
+            // The BRAM FIFOs and cascades of DSP, BRAM and URAM are not
+            // ported yet (the packer rejects them).
             write_logic();
             write_io_usp();
             write_routing();
@@ -2880,6 +2948,7 @@ struct FasmBackend
             write_clocking_usp();
             write_cmt_usp();
             write_dsp_usp();
+            write_uram_usp();
             write_pss_intf_usp();
             write_config_usp();
             return;

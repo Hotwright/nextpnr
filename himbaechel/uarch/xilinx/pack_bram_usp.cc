@@ -21,6 +21,7 @@
 // USPacker::pack_bram. RAMB18E2 and RAMB36E2 only: FIFOs are rejected by
 // check_unsupported(), and cascading (CASCADE_ORDER_A/B) is not handled.
 
+#include <boost/algorithm/string.hpp>
 #include "extra_data.h"
 #include "log.h"
 #include "nextpnr.h"
@@ -164,6 +165,57 @@ void USPacker::pack_bram()
             }
         }
     }
+}
+
+// URAM288 (0-ultrascale-bits designs/kv260_uram_char). One cell per site, no
+// cascades: a URAM288 with CASCADE_ORDER other than NONE, REG_CAS, or a
+// driven CAS_IN_* pin is refused. Tied pins were settled by pack_constants:
+// an invertible pin tied 0 is fed VCC with IS_<pin>_INVERTED toggled, as
+// Vivado feeds it.
+void USPacker::pack_uram()
+{
+    log_info("Packing URAM..\n");
+    dict<IdString, BelId> site_bels;
+    for (auto &cell : ctx->cells) {
+        CellInfo *ci = cell.second.get();
+        if (ci->type != id_URAM288)
+            continue;
+        for (const char *p : {"CASCADE_ORDER_A", "CASCADE_ORDER_B"})
+            if (str_or_default(ci->params, ctx->id(p), "NONE") != "NONE")
+                log_error("URAM288 '%s': %s is not NONE; URAM cascades are not supported\n", ctx->nameOf(ci), p);
+        for (const char *p : {"REG_CAS_A", "REG_CAS_B"})
+            if (str_or_default(ci->params, ctx->id(p), "FALSE") != "FALSE")
+                log_error("URAM288 '%s': %s is set; URAM cascades are not supported\n", ctx->nameOf(ci), p);
+        std::vector<IdString> cas;
+        for (auto &port : ci->ports) {
+            if (!boost::starts_with(port.first.str(ctx), "CAS_"))
+                continue;
+            NetInfo *n = port.second.net;
+            bool used = n != nullptr && (port.second.type == PORT_OUT
+                                                 ? !n->users.empty()
+                                                 : n->name != ctx->id("$PACKER_GND_NET"));
+            if (used)
+                log_error("URAM288 '%s': cascade pin %s is connected; URAM cascades are not supported\n",
+                          ctx->nameOf(ci), port.first.c_str(ctx));
+            cas.push_back(port.first);
+        }
+        for (IdString p : cas)
+            ci->disconnectPort(p);
+        if (ci->attrs.count(id_LOC)) {
+            if (site_bels.empty())
+                for (BelId bel : ctx->getBels())
+                    if (ctx->getBelType(bel) == id_BEL_URAM288)
+                        site_bels[uarch->get_site_name(uarch->get_bel_site(bel))] = bel;
+            std::string loc = ci->attrs.at(id_LOC).as_string();
+            auto found = site_bels.find(ctx->id(loc));
+            if (found == site_bels.end())
+                log_error("Can't place URAM288 '%s' at LOC %s\n", ctx->nameOf(ci), loc.c_str());
+            ci->attrs[id_BEL] = std::string(ctx->nameOfBel(found->second));
+        }
+    }
+    dict<IdString, XFormRule> uram_rules;
+    uram_rules[id_URAM288].new_type = id_BEL_URAM288;
+    generic_xform(uram_rules, false);
 }
 
 NEXTPNR_NAMESPACE_END

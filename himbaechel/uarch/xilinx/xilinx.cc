@@ -73,6 +73,8 @@ po::options_description XilinxImpl::getUArchOptions()
     specific.add_options()("xdc", po::value<std::string>(), "name of constraints file");
     specific.add_options()("unverified_dsp", po::value<std::string>(),
                            "UltraScale+: let DSP48E2 through before it is verified against Vivado");
+    specific.add_options()("unverified_uram", po::value<std::string>(),
+                           "UltraScale+: let URAM288 through before it is verified against Vivado");
     return specific;
 }
 
