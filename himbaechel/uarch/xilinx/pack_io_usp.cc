@@ -179,14 +179,11 @@ void USPacker::pack_io()
 
 void USPacker::check_unsupported()
 {
-    // MMCM/PLL stay refused until a spec design matches Vivado bit for bit;
-    // -o unverified_cmt lets that spec design through.
-    bool cmt = ctx->args.options.count("unverified_cmt");
+    // MMCM/PLL are supported (pack_plls refuses the modes that are not):
+    // every register matches Vivado; ROW_MID[0] may put CLKOUT 180 degrees
+    // from where Vivado would (fasm.cc, write_pll_usp).
     for (auto &cell : ctx->cells) {
         CellInfo *ci = cell.second.get();
-        if (!cmt && ci->type.in(id_MMCME4_ADV, id_MMCME4_BASIC, id_PLLE4_ADV, id_PLLE4_BASIC))
-            log_error("Cell '%s' of type %s is not supported on UltraScale+ in himbaechel yet\n", ctx->nameOf(ci),
-                      ci->type.c_str(ctx));
         if (ci->type.in(id_IDDRE1, id_ODDRE1, id_ISERDESE3, id_OSERDESE3, id_IDELAYE3, id_ODELAYE3, id_IDELAYCTRL,
                         id_FIFO18E2, id_FIFO36E2, id_URAM288, id_URAM288_BASE, id_DSP48E2))
             log_error("Cell '%s' of type %s is not supported on UltraScale+ in himbaechel yet\n", ctx->nameOf(ci),
