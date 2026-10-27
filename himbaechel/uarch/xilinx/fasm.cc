@@ -2416,6 +2416,120 @@ struct FasmBackend
         blank();
     }
 
+    // DSP48E2 (0-ultrascale-bits/designs/kv260_dsp_char; segbits_dsp.corrections
+    // from emit_dsp.py, which predicts every bit of Vivado's DSP tiles). One
+    // DSP_ALU cell stands for each primitive; it carries the parameters. The
+    // features are <tile>.DSP48E2_X0Y<0|1>.<f>, plus <tile>.IN_USE once a
+    // tile has a DSP. Vivado normalises before writing, and so does this:
+    // MASK reads as all ones and SEL_MASK as MASK without pattern detect,
+    // ADREG/DREG count only with the pre-adder in use (ZADREG/ZDREG set when
+    // they do not). An invertible pin writes ZINV_<pin> = !IS_INVERTED, or
+    // for a pin tied by the packer (X_TIE_<pin>) the constant itself; a tied
+    // CARRYINSEL bit has its own CARRYINSEL_TIE0/TIE1 bits, and so has a
+    // tied D bit (D_TIE0/TIE1; a tied A, B or C bit is routed).
+    void write_dsp_usp()
+    {
+        pool<int> tiles_in_use;
+        for (auto &cell : ctx->cells) {
+            CellInfo *ci = cell.second.get();
+            if (ci->type != id_DSP_ALU || ci->bel == BelId())
+                continue;
+            std::string tile = uarch->tile_name(ci->bel.tile);
+            if (!boost::starts_with(tile, "DSP_"))
+                log_error("DSP48E2 '%s' is on %s; only DSP tiles are characterised\n", ctx->nameOf(ci),
+                          ctx->nameOfBel(ci->bel));
+            if (!tiles_in_use.count(ci->bel.tile)) {
+                tiles_in_use.insert(ci->bel.tile);
+                push(tile);
+                write_bit("IN_USE");
+                pop();
+            }
+            auto str = [&](const char *k, const char *def) { return str_or_default(ci->params, ctx->id(k), def); };
+            auto num = [&](const char *k, int64_t def) -> int64_t {
+                auto found = ci->params.find(ctx->id(k));
+                if (found == ci->params.end())
+                    return def;
+                return found->second.is_string ? std::stoll(found->second.as_string()) : found->second.as_int64();
+            };
+            push(tile);
+            push(usp_site_name(uarch->get_bel_site(ci->bel)));
+            int64_t areg = num("AREG", 1), breg = num("BREG", 1);
+            write_bit("AREG_0", areg == 0);
+            write_bit("AREG_2", areg == 2);
+            write_bit("ACASCREG_EQ_AREG", num("ACASCREG", 1) == areg);
+            write_bit("BREG_0", breg == 0);
+            write_bit("BREG_2", breg == 2);
+            write_bit("BCASCREG_EQ_BREG", num("BCASCREG", 1) == breg);
+            for (auto r : {"ALUMODEREG", "CARRYINREG", "CARRYINSELREG", "CREG", "INMODEREG", "MREG", "OPMODEREG",
+                           "PREG"})
+                write_bit(std::string(r) + "_0", num(r, 1) == 0);
+            std::string use_mult = str("USE_MULT", "MULTIPLY"), amultsel = str("AMULTSEL", "A"),
+                        bmultsel = str("BMULTSEL", "B");
+            bool preadd = use_mult != "NONE" && (amultsel == "AD" || bmultsel == "AD");
+            write_bit("ZADREG", !(preadd && num("ADREG", 1) == 1));
+            write_bit("ZDREG", !(preadd && num("DREG", 1) == 1));
+            write_bit("AMULTSEL.AD", amultsel == "AD");
+            write_bit("BMULTSEL.AD", bmultsel == "AD");
+            write_bit("PREADDINSEL.B", str("PREADDINSEL", "A") == "B");
+            write_bit("A_INPUT.CASCADE", str("A_INPUT", "DIRECT") == "CASCADE");
+            write_bit("B_INPUT.CASCADE", str("B_INPUT", "DIRECT") == "CASCADE");
+            std::string autoreset = str("AUTORESET_PATDET", "NO_RESET");
+            if (autoreset != "NO_RESET")
+                write_bit("AUTORESET_PATDET." + autoreset);
+            write_bit("AUTORESET_PRIORITY.CEP", str("AUTORESET_PRIORITY", "RESET") == "CEP");
+            write_bit("SEL_PATTERN.C", str("SEL_PATTERN", "PATTERN") == "C");
+            bool patdet = str("USE_PATTERN_DETECT", "NO_PATDET") == "PATDET";
+            std::string sel_mask = patdet ? str("SEL_MASK", "MASK") : "MASK";
+            if (sel_mask != "MASK")
+                write_bit("SEL_MASK." + sel_mask);
+            write_bit("USE_MULT.NONE", use_mult == "NONE");
+            std::string simd = str("USE_SIMD", "ONE48");
+            if (simd != "ONE48")
+                write_bit("USE_SIMD." + simd);
+            write_bit("USE_WIDEXOR.TRUE", str("USE_WIDEXOR", "FALSE") == "TRUE");
+            write_bit("XORSIMD.XOR12", str("XORSIMD", "XOR24_48_96") == "XOR12");
+            uint64_t mask = num("MASK", 0x3FFFFFFFFFFFLL), pattern = num("PATTERN", 0), rnd = num("RND", 0);
+            for (int k = 0; k < 48; k++) {
+                write_bit(stringf("MASK[%d]", k), !patdet || (mask >> k & 1));
+                write_bit(stringf("PATTERN[%d]", k), pattern >> k & 1);
+                write_bit(stringf("RND[%d]", k), rnd >> k & 1);
+            }
+            static const std::vector<std::pair<std::string, int>> inv_pins = {
+                    {"ALUMODE", 4}, {"CARRYIN", 1},       {"INMODE", 5},     {"OPMODE", 9},
+                    {"RSTA", 1},    {"RSTALLCARRYIN", 1}, {"RSTALUMODE", 1}, {"RSTB", 1},
+                    {"RSTC", 1},    {"RSTCTRL", 1},       {"RSTD", 1},       {"RSTINMODE", 1},
+                    {"RSTM", 1},    {"RSTP", 1}};
+            for (auto &ip : inv_pins) {
+                int64_t inv = num(("IS_" + ip.first + "_INVERTED").c_str(), 0);
+                for (int b = 0; b < ip.second; b++) {
+                    std::string pin = ip.second > 1 ? stringf("%s[%d]", ip.first.c_str(), b) : ip.first;
+                    bool i = inv >> b & 1;
+                    auto tie = ci->attrs.find(ctx->id("X_TIE_" + pin));
+                    bool zinv = tie == ci->attrs.end() ? !i : ((tie->second.as_int64() != 0) != i);
+                    write_bit("ZINV_" + pin, zinv);
+                }
+            }
+            for (int b = 0; b < 3; b++) {
+                auto tie = ci->attrs.find(ctx->id(stringf("X_TIE_CARRYINSEL[%d]", b)));
+                if (tie != ci->attrs.end())
+                    write_bit(stringf("CARRYINSEL_TIE%d[%d]", tie->second.as_int64() != 0 ? 1 : 0, b));
+            }
+            // D[3], D[13] and D[23] tied to 1 set no bit (kv260_dsp_char,
+            // over 200 ties each): there is no D_TIE1 feature for them.
+            for (int b = 0; b < 27; b++) {
+                auto tie = ci->attrs.find(ctx->id(stringf("X_TIE_D[%d]", b)));
+                if (tie == ci->attrs.end())
+                    continue;
+                bool one = tie->second.as_int64() != 0;
+                if (!(one && (b == 3 || b == 13 || b == 23)))
+                    write_bit(stringf("D_TIE%d[%d]", one ? 1 : 0, b));
+            }
+            write_bit("ZINV_CLK", !num("IS_CLK_INVERTED", 0));
+            pop(2);
+        }
+        blank();
+    }
+
     // The CMT_L clock buffers' site attributes, as characterised in
     // 0-ultrascale-bits/designs/kv260_cmt_char (segbits_cmt_l.corrections),
     // each <tile>.<SITE_XnYm>.<ATTR>:
@@ -2765,6 +2879,7 @@ struct FasmBackend
             write_bram_usp();
             write_clocking_usp();
             write_cmt_usp();
+            write_dsp_usp();
             write_pss_intf_usp();
             write_config_usp();
             return;

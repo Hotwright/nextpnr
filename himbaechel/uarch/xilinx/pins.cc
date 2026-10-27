@@ -395,6 +395,21 @@ void get_tied_pins(Context *ctx, dict<IdString, dict<IdString, bool>> &tied_pins
     tied_pins[id_BUFGCE_DIV][id_CLR] = false;
     tied_pins[id_BUFGCE][id_CE] = true;
 
+    // DSP48E2: an input the netlist leaves open takes the primitive's default,
+    // as Vivado ties it (kv260_dsp_test reference: an open D is routed from
+    // GND and gets D_TIE0). The CEs default to 1, everything else to 0.
+    for (IdString p : {id_RSTA, id_RSTALLCARRYIN, id_RSTALUMODE, id_RSTB, id_RSTC, id_RSTCTRL, id_RSTD,
+                       id_RSTINMODE, id_RSTM, id_RSTP, id_CARRYIN})
+        tied_pins[id_DSP48E2][p] = false;
+    for (IdString p : {id_CEA1, id_CEA2, id_CEAD, id_CEALUMODE, id_CEB1, id_CEB2, id_CEC, id_CECARRYIN, id_CECTRL,
+                       id_CED, id_CEINMODE, id_CEM, id_CEP})
+        tied_pins[id_DSP48E2][p] = true;
+    for (auto bus : std::vector<std::pair<std::string, int>>{
+                 {"A", 30}, {"B", 18}, {"C", 48}, {"D", 27}, {"ALUMODE", 4}, {"CARRYINSEL", 3}, {"INMODE", 5},
+                 {"OPMODE", 9}})
+        for (int i = 0; i < bus.second; i++)
+            tied_pins[id_DSP48E2][ctx->id(bus.first + "[" + std::to_string(i) + "]")] = false;
+
     tied_pins[id_DSP48E1][id_CLK] = false;
     tied_pins[id_DSP48E1][id_RSTA] = false;
     tied_pins[id_DSP48E1][id_RSTALLCARRYIN] = false;

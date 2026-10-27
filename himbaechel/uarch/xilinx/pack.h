@@ -244,6 +244,9 @@ struct USPacker : public XilinxPacker
     // BRAM
     void pack_bram();
 
+    // DSP48E2
+    void pack_dsps();
+
     // ICAPE3, STARTUPE3, BSCANE2 and the rest of CONFIG_SITE
     void pack_config();
 
