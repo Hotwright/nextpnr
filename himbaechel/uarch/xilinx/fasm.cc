@@ -1971,7 +1971,10 @@ struct FasmBackend
 
         // The PS interface: one tile-level enable (write_pss_intf_usp), set
         // by fuzzers/070-ps8-int for any tile with a LOGIC_OUTS pip in use.
-        // The pips themselves have no bits.
+        // The pips themselves have no bits. prjuray names the enable
+        // OUTPUTS_ENABLED.1, which FASM cannot parse; 0-ultrascale-bits'
+        // db-corrections name the same bits OUTPUTS_ENABLED, as on
+        // INT_INTF_R_PCIE4.
         if (tt == "INT_INTF_LEFT_TERM_PSS") {
             if (boost::contains(dst, "LOGIC_OUTS") || boost::contains(src, "LOGIC_OUTS"))
                 usp_pss_outputs_enabled.insert(pip.tile);
@@ -2770,7 +2773,7 @@ struct FasmBackend
     {
         for (int tile : usp_pss_outputs_enabled) {
             push(uarch->tile_name(tile));
-            write_choice("OUTPUTS_ENABLED", "1");
+            write_bit("OUTPUTS_ENABLED");
             pop();
         }
         blank();
