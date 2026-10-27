@@ -2444,8 +2444,10 @@ struct FasmBackend
         // sets ROW_MID[0] (DRP 0x00 bit 0) from the routed CLKIN delay, in
         // bands of about 270 ps (kv260_mmcm_char/delay.tcl, the root sweep),
         // which needs a delay model nextpnr has no US+ data for. The two
-        // middle rows set it with the usual clock root; kv260_mmcm_test
-        // locks and runs at the predicted rates with it either way.
+        // middle rows set it with the usual clock root. It is not inert:
+        // kv260_mmcm_phase measures CLKOUT0 5.0 ns (half the 100 MHz CLKIN
+        // period) later or earlier with it cleared. Lock and frequency do
+        // not change.
         auto name_y = [](const std::string &name) { return std::stoi(name.substr(name.rfind('Y') + 1)); };
         IdString cmt_l = IdString(chip_tile_info(ctx->chip_info, ci->bel.tile).type_name);
         int row = 0;

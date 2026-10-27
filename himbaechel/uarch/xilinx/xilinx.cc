@@ -30,6 +30,7 @@
 #include "placer_static.h"
 
 #include "xilinx.h"
+#include "usp_cmt_l_pips.h"
 
 #include "himbaechel_helpers.h"
 
@@ -169,6 +170,12 @@ void XilinxImpl::init(Context *ctx)
     // MUX_24_ENC_60/63, each mux <- HDISTR_0_0. CLKIN2 and the feedback
     // inputs (with their muxes 53/57/59) are never routed: the FASM writer
     // ties them, as Vivado does for internal feedback.
+    // Beyond those, every CMT_L clock-network pip (CLK_* to CLK_*) without
+    // bits (usp_cmt_l_pips.h) is blocked too: left free, the router took the CMT column's own VDISTR
+    // down to another row's BUFCE_ROW (kv260_mmcm_phase) and the clock never
+    // arrived. The bitless pips known to work stay open: BUFGCE_DIV
+    // CLK_IN_PIN, and MUX_2TO1 <- HROUTE_0_t whose bit is the
+    // WIRE.CLK_HROUTE_0_t.USED feature.
     if (usp) {
         cmt_l_type = ctx->id("CMT_L");
         for (int i = 0; i < ctx->chip_info->tile_insts.ssize(); i++) {
@@ -177,6 +184,9 @@ void XilinxImpl::init(Context *ctx)
                 continue;
             std::regex bypass("CLK_BUFGCE_(\\d+)_CLK_IN"), mux24("CLK_CMT_MUX_24_ENC_(\\d+)_CLK_OUT"),
                     hroute("CLK_HROUTE_0_(\\d+)");
+            std::regex mux2to1("CLK_CMT_MUX_2TO1_\\d+_CLK_OUT");
+            pool<std::string> with_bits(std::begin(UspCmtL::pips), std::end(UspCmtL::pips));
+            pool<std::string> used_wires(std::begin(UspCmtL::used_wires), std::end(UspCmtL::used_wires));
             for (int p = 0; p < ti.pips.ssize(); p++) {
                 std::string src = IdString(ti.wires[ti.pips[p].src_wire].name).str(ctx);
                 std::string dst = IdString(ti.wires[ti.pips[p].dst_wire].name).str(ctx);
@@ -193,6 +203,11 @@ void XilinxImpl::init(Context *ctx)
                            (dst == "CMT_MMCM_WITH_MEM_1_CLKIN1" && src != "CLK_CMT_MUX_24_ENC_50_CLK_OUT") ||
                            (dst == "CMT_TXPLL_WITH_MEM_86_CLKIN" && src != "CLK_CMT_MUX_24_ENC_60_CLK_OUT") ||
                            (dst == "CMT_TXPLL_WITH_MEM_87_CLKIN" && src != "CLK_CMT_MUX_24_ENC_63_CLK_OUT"))
+                    cmt_l_blocked_pips.insert(p);
+                else if (boost::starts_with(dst, "CLK_") && boost::starts_with(src, "CLK_") &&
+                         !with_bits.count(dst + "." + src) &&
+                         !boost::ends_with(dst, "_CLK_IN_PIN") &&
+                         !(std::regex_match(dst, mux2to1) && std::regex_match(src, hroute) && used_wires.count(src)))
                     cmt_l_blocked_pips.insert(p);
             }
             log_info("Blocked %d uncharacterised CMT_L clock pips.\n", int(cmt_l_blocked_pips.size()));
