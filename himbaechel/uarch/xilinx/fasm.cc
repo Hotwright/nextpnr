@@ -30,6 +30,7 @@
 #include "nextpnr.h"
 #include "pins.h"
 #include "usp_drp.h"
+#include "usp_dsp_rows.h"
 #include "usp_uram_rows.h"
 #include "util.h"
 
@@ -2430,7 +2431,32 @@ struct FasmBackend
     // tied D bit (D_TIE0/TIE1; a tied A, B or C bit is routed).
     void write_dsp_usp()
     {
-        pool<int> tiles_in_use;
+        // A used output turns on its INT row's interface (OUT_ROW<r>, a tile
+        // feature): usp_dsp_rows.h. No other bit marks a DSP in use.
+        dict<std::pair<int, IdString>, int> out_row;
+        for (const auto &r : usp_dsp_rows)
+            out_row[{r.site, ctx->id(r.pin)}] = r.row;
+        dict<int, std::set<int>> tile_rows;
+        for (auto &cell : ctx->cells) {
+            CellInfo *ci = cell.second.get();
+            if (ci->type != id_DSP_OUTPUT || ci->bel == BelId())
+                continue;
+            auto site = uarch->get_bel_site(ci->bel);
+            int pos = uarch->tile_extra_data(site.tile)->sites[site.site].rel_y;
+            for (auto &port : ci->ports) {
+                if (port.second.type != PORT_OUT || port.second.net == nullptr || port.second.net->users.empty())
+                    continue;
+                auto found = out_row.find({pos, port.first});
+                if (found != out_row.end())
+                    tile_rows[ci->bel.tile].insert(found->second);
+            }
+        }
+        for (auto &t : tile_rows) {
+            push(uarch->tile_name(t.first));
+            for (int r : t.second)
+                write_bit(stringf("OUT_ROW%d", r));
+            pop();
+        }
         for (auto &cell : ctx->cells) {
             CellInfo *ci = cell.second.get();
             if (ci->type != id_DSP_ALU || ci->bel == BelId())
@@ -2439,12 +2465,6 @@ struct FasmBackend
             if (!boost::starts_with(tile, "DSP_"))
                 log_error("DSP48E2 '%s' is on %s; only DSP tiles are characterised\n", ctx->nameOf(ci),
                           ctx->nameOfBel(ci->bel));
-            if (!tiles_in_use.count(ci->bel.tile)) {
-                tiles_in_use.insert(ci->bel.tile);
-                push(tile);
-                write_bit("IN_USE");
-                pop();
-            }
             auto str = [&](const char *k, const char *def) { return str_or_default(ci->params, ctx->id(k), def); };
             auto num = [&](const char *k, int64_t def) -> int64_t {
                 auto found = ci->params.find(ctx->id(k));
