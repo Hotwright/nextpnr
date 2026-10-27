@@ -2445,9 +2445,10 @@ struct FasmBackend
         // bands of about 270 ps (kv260_mmcm_char/delay.tcl, the root sweep),
         // which needs a delay model nextpnr has no US+ data for. The two
         // middle rows set it with the usual clock root. It is not inert:
-        // kv260_mmcm_phase measures CLKOUT0 5.0 ns (half the 100 MHz CLKIN
-        // period) later or earlier with it cleared. Lock and frequency do
-        // not change.
+        // kv260_mmcm_phase measures CLKOUT0 5.0 ns away with it cleared
+        // (half the 10 ns CLKIN period in that test, M 10, O 10). Lock and
+        // frequency do not change, and UG572 promises no CLKIN/CLKOUT phase
+        // relationship with internal feedback.
         auto name_y = [](const std::string &name) { return std::stoi(name.substr(name.rfind('Y') + 1)); };
         IdString cmt_l = IdString(chip_tile_info(ctx->chip_info, ci->bel.tile).type_name);
         int row = 0;
