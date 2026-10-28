@@ -601,7 +601,13 @@ class HeAPPlacer
         if (ctx->getBelBucketForBel(bel) != cfg.ff_bel_bucket)
             return true;
         auto loc = ctx->getBelLocation(bel);
-        return control_sets.at(loc.x, loc.y).at(z_to_ctrl_set.at(loc.z)).check(cell_ctrl_set.at(cell));
+        // A tile can hold FF bels the fast-bel table left out (a constrained
+        // cell's): as in unbind_ctrl_set, it has no control-set state.
+        auto &tile = control_sets.at(loc.x, loc.y);
+        auto fnd = z_to_ctrl_set.find(loc.z);
+        if (tile.empty() || fnd == z_to_ctrl_set.end())
+            return true;
+        return tile.at(fnd->second).check(cell_ctrl_set.at(cell));
     }
 
     void bind_ctrl_set(BelId bel, IdString cell)
@@ -611,7 +617,11 @@ class HeAPPlacer
         if (ctx->getBelBucketForBel(bel) != cfg.ff_bel_bucket)
             return;
         auto loc = ctx->getBelLocation(bel);
-        control_sets.at(loc.x, loc.y).at(z_to_ctrl_set.at(loc.z)).bind(cell_ctrl_set.at(cell));
+        auto &tile = control_sets.at(loc.x, loc.y);
+        auto fnd = z_to_ctrl_set.find(loc.z);
+        if (tile.empty() || fnd == z_to_ctrl_set.end())
+            return;
+        tile.at(fnd->second).bind(cell_ctrl_set.at(cell));
     }
 
     void unbind_ctrl_set(BelId bel)
