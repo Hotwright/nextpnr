@@ -723,7 +723,11 @@ void XilinxImpl::assign_cell_tags()
             ct.ff.clk = ci->getPort(usp ? id_CLK : id_CK);
             ct.ff.ce = ci->getPort(id_CE);
             ct.ff.sr = ci->getPort(id_SR);
-            ct.ff.is_clkinv = bool_or_default(ci->params, id_IS_CLK_INVERTED, false);
+            // A packed FDxE carries IS_C_INVERTED (yosys, and the FDxE_1 rules);
+            // the clock inversion is per half of the slice, so FFs of both
+            // edges must not share one.
+            ct.ff.is_clkinv = bool_or_default(ci->params, id_IS_CLK_INVERTED, false) ||
+                              bool_or_default(ci->params, id_IS_C_INVERTED, false);
             ct.ff.is_srinv = bool_or_default(ci->params, id_IS_R_INVERTED, false) ||
                              bool_or_default(ci->params, id_IS_S_INVERTED, false) ||
                              bool_or_default(ci->params, id_IS_CLR_INVERTED, false) ||
