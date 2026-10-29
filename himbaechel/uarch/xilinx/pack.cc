@@ -854,6 +854,7 @@ void XilinxImpl::pack()
         packer.pack_ffs();
         packer.finalise_muxfs();
         packer.pack_lutffs();
+        packer.place_ps_boundary();
         return;
     }
 

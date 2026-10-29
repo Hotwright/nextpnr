@@ -251,6 +251,9 @@ struct USPacker : public XilinxPacker
     // ICAPE3, STARTUPE3, BSCANE2 and the rest of CONFIG_SITE
     void pack_config();
 
+    // Flip-flops wired straight to PS8 pins, pinned beside the PS
+    void place_ps_boundary();
+
     // Families of cell not yet ported to UltraScale+; error out rather than
     // mis-pack them.
     void check_unsupported();

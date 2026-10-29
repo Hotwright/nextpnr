@@ -16,6 +16,7 @@ set(SOURCES
     pack_bram_usp.cc
     pack_dsp_usp.cc
     pack_config_usp.cc
+    pack_ps_usp.cc
     pack_clocking_usp.cc
     pins.cc
     pins.h
