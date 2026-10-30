@@ -474,6 +474,22 @@ void XilinxImpl::configurePlacerHeap(PlacerHeapCfg &cfg)
     };
 }
 
+namespace {
+// Routing delay between two tiles dist_x/dist_y grid tiles apart, in ps.
+// UltraScale+: the lower envelope (20th percentile per distance) of the routed
+// delays of every connection of kv260_ps_axi_test, under the RWRoute node
+// delays in the chipdb: a fast router-chosen route, not a typical one.
+delay_t distance_delay(bool usp, int dist_x, int dist_y)
+{
+    if (usp)
+        return 150 + 25 * std::min(dist_y, 6) + 17 * std::max(dist_y - 6, 0) + 28 * std::min(dist_x, 12) +
+               8 * std::max(dist_x - 12, 0);
+    // TODO: improve sophistication here based on old nextpnr-xilinx code
+    return 500 + 12 * (2 * std::max(dist_y - 6, 0) + 4 * std::min(dist_y, 6) + std::max(dist_x - 12, 0) +
+                       2 * std::min(dist_x, 12));
+}
+} // namespace
+
 void XilinxImpl::configurePlacerStatic(PlacerStaticCfg &cfg)
 {
     cfg.hpwl_scale_x = 2;
@@ -488,14 +504,11 @@ void XilinxImpl::configurePlacerStatic(PlacerStaticCfg &cfg)
     cfg.timing_mx = 25;
     cfg.timing_my = 50;
 
-    cfg.predict_delay = [](Context *ctx, const PlacerStaticCfg &cfg, Loc src_loc, IdString src_pin, Loc dst_loc,
-                           IdString dst_pin) -> delay_t {
+    cfg.predict_delay = [usp = usp](Context *ctx, const PlacerStaticCfg &cfg, Loc src_loc, IdString src_pin,
+                                    Loc dst_loc, IdString dst_pin) -> delay_t {
         if (dst_pin == id_CIN && (src_pin == id_CO3 || src_pin == id_CO7))
             return 0;
-        // TODO: improve sophistication here based on old nextpnr-xilinx code
-        int dist_x = std::abs(dst_loc.x - src_loc.x), dist_y = std::abs(dst_loc.y - src_loc.y);
-        return 500 + 12 * (2 * std::max(dist_y - 6, 0) + 4 * std::min(dist_y, 6) + std::max(dist_x - 12, 0) +
-                           2 * std::min(dist_x, 12));
+        return distance_delay(usp, std::abs(dst_loc.x - src_loc.x), std::abs(dst_loc.y - src_loc.y));
     };
 
     {
@@ -917,10 +930,7 @@ delay_t XilinxImpl::estimateDelay(WireId src, WireId dst) const
         }
     }
 
-    // TODO: improve sophistication here based on old nextpnr-xilinx code
-    int dist_x = std::abs(dx - sx), dist_y = std::abs(dy - sy);
-    return 500 + 12 * (2 * std::max(dist_y - 6, 0) + 4 * std::min(dist_y, 6) + std::max(dist_x - 12, 0) +
-                       2 * std::min(dist_x, 12));
+    return distance_delay(usp, std::abs(dx - sx), std::abs(dy - sy));
 }
 
 delay_t XilinxImpl::predictDelay(BelId src_bel, IdString src_pin, BelId dst_bel, IdString dst_pin) const
@@ -928,12 +938,9 @@ delay_t XilinxImpl::predictDelay(BelId src_bel, IdString src_pin, BelId dst_bel,
     int sx, sy, dx, dy;
     tile_xy(ctx->chip_info, src_bel.tile, sx, sy);
     tile_xy(ctx->chip_info, dst_bel.tile, dx, dy);
-    if (dst_pin == id_CIN && src_pin == id_CO3)
+    if (dst_pin == id_CIN && (src_pin == id_CO3 || (usp && src_pin == id_CO7)))
         return 0;
-    // TODO: improve sophistication here based on old nextpnr-xilinx code
-    int dist_x = std::abs(dx - sx), dist_y = std::abs(dy - sy);
-    return 500 + 12 * (2 * std::max(dist_y - 6, 0) + 4 * std::min(dist_y, 6) + std::max(dist_x - 12, 0) +
-                       2 * std::min(dist_x, 12));
+    return distance_delay(usp, std::abs(dx - sx), std::abs(dy - sy));
 }
 
 BoundingBox XilinxImpl::getRouteBoundingBox(WireId src, WireId dst) const

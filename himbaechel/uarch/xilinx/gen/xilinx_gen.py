@@ -5,6 +5,7 @@ import xilinx_device
 import filters
 import struct
 import parse_sdf
+import usp_timing
 sys.path.append(path.join(path.dirname(__file__), "../../.."))
 from himbaechel_dbgen.chip import *
 
@@ -451,10 +452,23 @@ def import_usp_nodes(ch: Chip, d, nodes_path):
     # fewer than two used wires dropped -- the same pruning the tileconn path
     # below applies. Interconnect wires go first, as there, for nextpnr's
     # delay estimates.
+    #
+    # Each node's delay (nodes_delay.bin, RWRoute's UltraScale+ model) becomes
+    # its timing class. himbaechel's getPipDelay does not add a node's `delay`;
+    # it adds (pip out_res + node res / 2) * node cap / 1e6 for the node a pip
+    # drives. UltraScale+ pips carry no R or C, so a node with res 2 kOhm and
+    # cap d fF costs exactly d ps to the pip that drives it.
     print("Processing nodes (exact, from RapidWright)...")
-    with open(nodes_path, "rb") as f:
+    delays_path = path.join(path.dirname(nodes_path), "nodes_delay.bin")
+    if not path.exists(delays_path):
+        raise RuntimeError(f"{delays_path} is missing: re-run the dump (run_usp_dump.sh)")
+    seen = set()
+    with open(nodes_path, "rb") as f, open(delays_path, "rb") as fd:
         count, = struct.unpack("<I", f.read(4))
-        for _ in range(count):
+        dcount, = struct.unpack("<I", fd.read(4))
+        assert dcount == count, f"nodes_delay.bin has {dcount} nodes, nodes.bin {count}"
+        delays = struct.unpack(f"<{count}H", fd.read(2 * count))
+        for k in range(count):
             n, = struct.unpack("<I", f.read(4))
             raw = f.read(8 * n)
             ws = [struct.unpack_from("<HHI", raw, 8 * i) for i in range(n)]
@@ -462,8 +476,12 @@ def import_usp_nodes(ch: Chip, d, nodes_path):
             # xilinx_device indexes them by name.
             ws = [(x, y, d.tiles_by_xy[x, y].data.json_wire_index[i]) for x, y, i in ws]
             ws.sort(key=lambda w: 0 if d.tiles_by_xy[w[0], w[1]].tile_type() == "INT" else 1)
-            ch.add_node([NodeWire(x, y, i) for x, y, i in ws], timing_class="node_c0_c0")
-    ch.timing.set_node_class("DEFAULT", "node_c0_c0", delay=TimingValue(0), cap=TimingValue(0), res=TimingValue(0))
+            cls = f"node_d{delays[k]}"
+            if cls not in seen:
+                ch.timing.set_node_class("DEFAULT", cls, delay=TimingValue(delays[k]),
+                                         cap=TimingValue(delays[k]), res=TimingValue(2000000))
+                seen.add(cls)
+            ch.add_node([NodeWire(x, y, i) for x, y, i in ws], timing_class=cls)
 
 def import_tileconn_nodes(ch: Chip, d):
     seen_nodes = set()
@@ -508,6 +526,11 @@ def import_tileconn_nodes(ch: Chip, d):
 def import_timings(ch: Chip, xraydb_root, usp):
     # Stub timing class
     ch.timing.set_pip_class("DEFAULT", "SITE_NULL", delay=TimingValue(20))
+    if usp:
+        # RapidWright's UltraScale+ model, copied into the dump by run_usp_dump.sh.
+        usp_timing.import_usp_cell_timings(ch, path.join(xraydb_root, "timing", "intrasite_delay_terms.txt"),
+                                           TimingValue, ClockEdge)
+        return
     # Stub bel timings
     lut = ch.timing.add_cell_variant("DEFAULT", "SLICE_LUTX")
     for i in range(1, 6+1):
@@ -523,8 +546,6 @@ def import_timings(ch: Chip, xraydb_root, usp):
     ff.add_setup_hold(ck, "SR", ClockEdge.RISING, TimingValue(100, 100), TimingValue(0, 0))
     ff.add_setup_hold(ck, "D", ClockEdge.RISING, TimingValue(100, 100), TimingValue(200, 200))
     ff.add_clock_out(ck, "Q", ClockEdge.RISING, TimingValue(300, 350))
-    if usp:
-        return # no SDF for UltraScale+ yet: stub timing only
 
     # Load SDF for carry and mux
     timings_root = xraydb_root

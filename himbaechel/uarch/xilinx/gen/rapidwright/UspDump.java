@@ -3,6 +3,9 @@ package dev.fpga.rapidwright;
 import com.xilinx.rapidwright.design.Design;
 import com.xilinx.rapidwright.design.SiteInst;
 import com.xilinx.rapidwright.device.*;
+import com.xilinx.rapidwright.rwroute.RouteNode;
+import com.xilinx.rapidwright.timing.delayestimator.DelayEstimatorBase;
+import com.xilinx.rapidwright.timing.delayestimator.InterconnectInfo;
 
 import java.io.*;
 import java.nio.ByteBuffer;
@@ -19,6 +22,7 @@ import java.util.*;
  *   OUT/meta/wire_intents.json
  *   OUT/<fabric>/tilegrid.json
  *   OUT/<fabric>/nodes.bin            exact nodes (replaces tileconn.json)
+ *   OUT/<fabric>/nodes_delay.bin      each node's delay, from RWRoute's model
  *   OUT/<fabric><package>-<speed>/package_pins.csv
  *
  * Only USED tile wires are written: pip endpoints and site-pin wires. Every
@@ -30,6 +34,12 @@ import java.util.*;
  * nodes.bin, little-endian: u32 node count, then per node
  *   u32 n, then n x (u16 tile_x, u16 tile_y, u32 wire_index).
  * Nodes with fewer than two used wires are omitted.
+ *
+ * nodes_delay.bin, little-endian: u32 node count, then a u16 delay in ps per
+ * node, in nodes.bin order. It is the delay RWRoute's timing-driven mode gives
+ * the node (RouterHelper.computeNodeDelay: the UltraScale+ delay estimator
+ * for INT exit nodes, 0 for every other node). The estimator reads its terms
+ * from RAPIDWRIGHT_PATH/timing/ultrascaleplus.
  */
 public class UspDump {
     static String q(String s) {
@@ -289,9 +299,17 @@ public class UspDump {
         // ---- nodes, in used-wire indices
         long nodes = 0, refs = 0;
         File nodesFile = new File(fab, "nodes.bin");
-        try (DataOutputStream os = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(nodesFile), 1 << 20))) {
+        File delayFile = new File(fab, "nodes_delay.bin");
+        // useUTurnNodes: nextpnr routes the nodes that run off the die edge and
+        // turn back (WW4 in the westmost INT column, ...). Without it the
+        // estimator gives them 16383 ps, which RWRoute uses to keep off them.
+        DelayEstimatorBase<InterconnectInfo> est = new DelayEstimatorBase<>(d, new InterconnectInfo(), true, 0);
+        int maxDelay = 0;
+        try (DataOutputStream os = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(nodesFile), 1 << 20));
+             DataOutputStream ds = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(delayFile), 1 << 20))) {
             ByteBuffer bb = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN);
             os.writeInt(0); // patched below
+            ds.writeInt(0);
             int[] xs = new int[4096], ys = new int[4096], ws = new int[4096];
             for (Tile t : d.getAllTiles()) {
                 for (int w = 0; w < t.getWireCount(); w++) {
@@ -313,17 +331,22 @@ public class UspDump {
                         bb.clear(); bb.putShort((short) xs[i]); bb.putShort((short) ys[i]); bb.putInt(ws[i]);
                         os.write(bb.array(), 0, 8);
                     }
+                    int dl = RouteNode.isExitNode(node) ? est.getDelayOf(node) : 0;
+                    maxDelay = Math.max(maxDelay, dl);
+                    bb.clear(); bb.putShort((short) dl); ds.write(bb.array(), 0, 2);
                     nodes++;
                     refs += k;
                 }
             }
         }
-        try (RandomAccessFile raf = new RandomAccessFile(nodesFile, "rw")) {
-            ByteBuffer bb = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN);
-            bb.putInt((int) nodes);
-            raf.write(bb.array());
+        for (File f : new File[]{nodesFile, delayFile}) {
+            try (RandomAccessFile raf = new RandomAccessFile(f, "rw")) {
+                ByteBuffer bb = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN);
+                bb.putInt((int) nodes);
+                raf.write(bb.array());
+            }
         }
-        System.out.println("nodes: " + nodes + " (" + refs + " used-wire refs)");
+        System.out.println("nodes: " + nodes + " (" + refs + " used-wire refs), max delay " + maxDelay + " ps");
 
         // ---- package pins
         com.xilinx.rapidwright.device.Package pkg = d.getActivePackage();
