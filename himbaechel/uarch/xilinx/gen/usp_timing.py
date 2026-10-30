@@ -12,6 +12,21 @@ SITE_NULL class).
 
 import re
 
+# RapidWright's model is for faster UltraScale+ parts than the K26 -2LV
+# (0.72 V). Vivado 2024.2's timing of kv260_ps_axi_test on xck26-sfvc784-2LV-c
+# puts the slice cells at about 1.5x the model: FF clock-to-Q 112-118 ps
+# (model 77), the slowest LUT input 220-228 ps (A1, 150), the fastest
+# 56-60 ps (A6, 35). Every cell arc below is scaled by CELL_SCALE, and
+# xilinx_gen.py scales the node delays by ROUTE_SCALE.
+#
+# ROUTE_SCALE: the 880 single-load nets of the same Vivado build, each priced
+# node by node with the model, fit Vivado = 1.34 x model (+107 ps when the
+# sink is an FF D pin: the wire inside the slice, see below), RMS error 76 ps.
+CELL_SCALE = 1.5
+ROUTE_SCALE = 1.35
+# Site pin -> FF D inside the slice: model 100 ps, fitted from Vivado 107.
+FF_D_SITE_WIRE = 107
+
 
 def parse_logic_arcs(filename, config=None):
     """
@@ -77,7 +92,7 @@ def parse_logic_arcs(filename, config=None):
 
 def import_usp_cell_timings(ch, filename, TimingValue, ClockEdge):
     arcs = parse_logic_arcs(filename, {"CARRY_TYPE": "SINGLE_CY8"})
-    tv = lambda d: TimingValue(d, d)
+    tv = lambda d: TimingValue(round(d * CELL_SCALE), round(d * CELL_SCALE))
 
     lut = ch.timing.add_cell_variant("DEFAULT", "SLICE_LUTX")
     lut6, lut5 = arcs["A6LUT"], arcs["A5LUT"]
@@ -99,15 +114,16 @@ def import_usp_cell_timings(ch, filename, TimingValue, ClockEdge):
     ff = ch.timing.add_cell_variant("DEFAULT", "SLICE_FFX")
     ffa = arcs["AFF"]
     # The model's setup is relative to the FF's D bel pin (-25 ps); the site
-    # pin to D wire inside the slice is another 100 ps
-    # (INTRASITE_DELAY_SITEPIN_TO_FF_INPUT), which the chipdb's site pips do
-    # not carry. Fold it in here: pessimistic by ~50 ps for a LUT feeding its
-    # own FF (LUT_OUTPUT_TO_FF_INPUT is 50), exact from outside the slice.
-    setup = ffa[("CLK", "D")] + 100
-    ff.add_setup_hold("CLK", "D", ClockEdge.RISING, tv(setup), tv(0))
-    # CE and SR: the model gives only their 5 ps site pin delay; take D's.
-    ff.add_setup_hold("CLK", "CE", ClockEdge.RISING, tv(setup), tv(0))
-    ff.add_setup_hold("CLK", "SR", ClockEdge.RISING, tv(setup), tv(0))
+    # pin to D wire inside the slice (FF_D_SITE_WIRE) is not carried by the
+    # chipdb's site pips. Fold it in here: pessimistic by ~50 ps for a LUT
+    # feeding its own FF, exact from outside the slice. (Vivado's own D setup
+    # is -44 ps, which with the wire gives 63.)
+    setup = round(ffa[("CLK", "D")] * CELL_SCALE) + FF_D_SITE_WIRE
+    ff.add_setup_hold("CLK", "D", ClockEdge.RISING, TimingValue(setup, setup), tv(0))
+    # CE and SR: the model gives only their 5 ps site pin delay. Vivado's CE
+    # setup on the K26 is 78-81 ps; use it, unscaled, for SR too.
+    ff.add_setup_hold("CLK", "CE", ClockEdge.RISING, TimingValue(80, 80), tv(0))
+    ff.add_setup_hold("CLK", "SR", ClockEdge.RISING, TimingValue(80, 80), tv(0))
     ff.add_clock_out("CLK", "Q", ClockEdge.RISING, tv(ffa[("CLK", "Q")]))
 
     # F8MUX and F9MUX are not in the model; F7MUX's arcs stand in.

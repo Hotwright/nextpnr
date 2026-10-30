@@ -943,6 +943,39 @@ delay_t XilinxImpl::predictDelay(BelId src_bel, IdString src_pin, BelId dst_bel,
     return distance_delay(usp, std::abs(dx - sx), std::abs(dy - sy));
 }
 
+TimingClockingInfo XilinxImpl::getPortClockingInfo(const CellInfo *cell, IdString port, int index) const
+{
+    TimingClockingInfo info = ctx->get_port_clocking_info_default(cell, port, index);
+    // The chipdb times every flip-flop on the rising edge. One whose clock is
+    // inverted (FDxE_1, IS_C_INVERTED) launches and captures on the falling
+    // edge, so its paths to and from rising-edge logic get half a cycle.
+    // (Series-7 has the same gap; it is left alone so its output is unchanged.)
+    if (!usp)
+        return info;
+    bool falling = cell->type == id_SLICE_FFX && (bool_or_default(cell->params, id_IS_CLK_INVERTED, false) ||
+                                                  bool_or_default(cell->params, id_IS_C_INVERTED, false));
+    if (falling)
+        info.edge = (info.edge == RISING_EDGE) ? FALLING_EDGE : RISING_EDGE;
+    // Clock uncertainty, as Vivado computes it for the K26: (TSJ^2 + DJ^2)^1/2 / 2,
+    // plus the duty-cycle distortion on paths between opposite edges. nextpnr
+    // has no uncertainty of its own, so it goes into the capture setup time.
+    // PL_CLK0..3 (through BUFG_PS) carry the PS PLL's discrete jitter:
+    // TSJ 71 ps, DJ 905 ps -> 454 ps. Other clocks get only TSJ/2; Vivado's
+    // DJ for an MMCM depends on its settings, which this does not model.
+    const NetInfo *clk = cell->getPort(info.clock_port);
+    bool ps_clock = clk && clk->driver.cell && clk->driver.cell->type == id_BUFCE_BUFG_PS;
+    info.setup.max_delay += ps_clock ? 454 : 36;
+    // DCD (200 ps) belongs to rise->fall and fall->rise paths only, but a port
+    // does not know the other end's edge: charge it to the falling-edge
+    // flip-flop, as launch (clock-to-Q) and as capture (setup). A fall->fall
+    // path is charged twice where Vivado charges nothing.
+    if (falling && ps_clock) {
+        info.setup.max_delay += 200;
+        info.clockToQ = DelayQuad(info.clockToQ.minDelay() + 200, info.clockToQ.maxDelay() + 200);
+    }
+    return info;
+}
+
 BoundingBox XilinxImpl::getRouteBoundingBox(WireId src, WireId dst) const
 {
     int x0, y0, x1, y1;

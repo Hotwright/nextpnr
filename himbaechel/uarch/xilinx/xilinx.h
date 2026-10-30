@@ -196,6 +196,7 @@ struct XilinxImpl : HimbaechelAPI
     void find_source_sink_locs();
 
     delay_t predictDelay(BelId src_bel, IdString src_pin, BelId dst_bel, IdString dst_pin) const override;
+    TimingClockingInfo getPortClockingInfo(const CellInfo *cell, IdString port, int index) const override;
     delay_t estimateDelay(WireId src, WireId dst) const override;
     BoundingBox getRouteBoundingBox(WireId src, WireId dst) const override;
 

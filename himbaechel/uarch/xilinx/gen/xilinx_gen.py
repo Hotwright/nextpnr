@@ -467,7 +467,7 @@ def import_usp_nodes(ch: Chip, d, nodes_path):
         count, = struct.unpack("<I", f.read(4))
         dcount, = struct.unpack("<I", fd.read(4))
         assert dcount == count, f"nodes_delay.bin has {dcount} nodes, nodes.bin {count}"
-        delays = struct.unpack(f"<{count}H", fd.read(2 * count))
+        delays = [round(d * usp_timing.ROUTE_SCALE) for d in struct.unpack(f"<{count}H", fd.read(2 * count))]
         for k in range(count):
             n, = struct.unpack("<I", f.read(4))
             raw = f.read(8 * n)
