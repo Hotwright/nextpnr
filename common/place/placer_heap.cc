@@ -2206,7 +2206,10 @@ PlacerHeapCfg::PlacerHeapCfg(Context *ctx)
     if (timeout_divisor > 0) {
         // Set a conservative default. This is a rather large number and could probably
         // be shaved down, but for now it will keep the process from running indefinite.
-        cell_placement_timeout = std::max(10000, (int(ctx->cells.size()) * int(ctx->cells.size()) / timeout_divisor));
+        // In 64 bits: cells^2 overflows int above ~46k cells, and max() then
+        // picks 10000 whatever the divisor.
+        int64_t n = int64_t(ctx->cells.size());
+        cell_placement_timeout = int(std::min<int64_t>(std::max<int64_t>(10000, n * n / timeout_divisor), INT32_MAX));
     } else {
         cell_placement_timeout = 0;
     }
