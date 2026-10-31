@@ -959,13 +959,17 @@ TimingClockingInfo XilinxImpl::getPortClockingInfo(const CellInfo *cell, IdStrin
     // Clock uncertainty, as Vivado computes it for the K26: (TSJ^2 + DJ^2)^1/2 / 2,
     // plus the duty-cycle distortion on paths between opposite edges. nextpnr
     // has no uncertainty of its own, so it goes into the capture setup time.
-    // PL_CLK0..3 (through BUFG_PS) carry the PS PLL's discrete jitter:
-    // TSJ 71 ps, DJ 905 ps -> 454 ps. Other clocks get only TSJ/2; Vivado's
-    // DJ for an MMCM depends on its settings, which this does not model.
+    // PL_CLK0..3 (through BUFG_PS) carry the PS PLL's discrete jitter. With
+    // the PS configured by its IP (zynq_ultra_ps_e, IOPLL as on the KV260)
+    // Vivado gives TSJ 71 ps, DJ 312 ps -> 160 ps. (A bare PS8 primitive gets
+    // a default DJ of 905 ps -> 454 ps, which no real board clock has.)
+    // Other clocks get only TSJ/2; Vivado's DJ for an MMCM depends on its
+    // settings, which this does not model.
     const NetInfo *clk = cell->getPort(info.clock_port);
     bool ps_clock = clk && clk->driver.cell && clk->driver.cell->type == id_BUFCE_BUFG_PS;
-    info.setup.max_delay += ps_clock ? 454 : 36;
-    // DCD (200 ps) belongs to rise->fall and fall->rise paths only, but a port
+    info.setup.max_delay += ps_clock ? 160 : 36;
+    // DCD (200 ps, the same in the bare-PS8 and the IP build) belongs to
+    // rise->fall and fall->rise paths only, but a port
     // does not know the other end's edge: charge it to the falling-edge
     // flip-flop, as launch (clock-to-Q) and as capture (setup). A fall->fall
     // path is charged twice where Vivado charges nothing.

@@ -19,13 +19,18 @@ import re
 # 56-60 ps (A6, 35). Every cell arc below is scaled by CELL_SCALE, and
 # xilinx_gen.py scales the node delays by ROUTE_SCALE.
 #
-# ROUTE_SCALE: the 880 single-load nets of the same Vivado build, each priced
-# node by node with the model, fit Vivado = 1.34 x model (+107 ps when the
-# sink is an FF D pin: the wire inside the slice, see below), RMS error 76 ps.
+# ROUTE_SCALE: single-load nets of Vivado builds, each priced node by node
+# with the model, fit Vivado = k x model (+ FF_D_SITE_WIRE when the sink is an
+# FF D pin: the wire inside the slice, see below). kv260_ps_axi_test alone
+# (880 nets, 553 into FF D) gave k 1.34 / +107 ps; with hotc's tokenizer
+# engine (3000 nets, none into FF D; alone k is 1.16-1.19) weighted equally,
+# k 1.26 / +128 ps: mean error +4 and -14 ps, RMS 77 and 52 ps.
+# The cells hold at 1.5 on the tokenizer too (FF clk->Q 113-115, CARRY8
+# S0->CO7 281 vs 1.5 x 199, CI->O2 101 vs 1.5 x 67).
 CELL_SCALE = 1.5
-ROUTE_SCALE = 1.35
-# Site pin -> FF D inside the slice: model 100 ps, fitted from Vivado 107.
-FF_D_SITE_WIRE = 107
+ROUTE_SCALE = 1.26
+# Site pin -> FF D inside the slice: model 100 ps, fitted from Vivado 128.
+FF_D_SITE_WIRE = 128
 
 
 def parse_logic_arcs(filename, config=None):
