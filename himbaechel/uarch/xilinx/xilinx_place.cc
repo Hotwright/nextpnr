@@ -17,6 +17,7 @@
  *
  */
 
+#include <algorithm>
 #include <boost/algorithm/string.hpp>
 #include <regex>
 
@@ -32,6 +33,20 @@
 #include "himbaechel_constids.h"
 
 NEXTPNR_NAMESPACE_BEGIN
+
+// Distinct nets on the inputs of a fractured LUT6/LUT5 pair.
+template <typename T> static int lut_pair_distinct_inputs(const T *lut6, const T *lut5)
+{
+    const NetInfo *seen[12];
+    int n = 0;
+    for (const T *l : {lut6, lut5})
+        for (int i = 0; i < l->lut.input_count; i++) {
+            const NetInfo *net = l->lut.input_sigs[i];
+            if (std::find(seen, seen + n, net) == seen + n)
+                seen[n++] = net;
+        }
+    return n;
+}
 
 // #define DEBUG_VALIDITY
 #ifdef DEBUG_VALIDITY
@@ -93,6 +108,13 @@ bool XilinxImpl::xcu_logic_tile_valid(IdString tile_type, const LogicTileStatus 
                             }
                         }
                         if (shared < need_shared) {
+                            DBG();
+                            return false;
+                        }
+                        // The count above is per pin, so a net on two pins of one LUT (often a
+                        // constant) counts as shared twice. fixup_placement wires the pair by
+                        // distinct nets, and with more than five it has no A6 left to tie high.
+                        if (lut_pair_distinct_inputs(lut6, lut5) > 5) {
                             DBG();
                             return false;
                         }
@@ -181,9 +203,13 @@ bool XilinxImpl::xcu_logic_tile_valid(IdString tile_type, const LogicTileStatus 
             auto ff1 = get_tags(lts.cells[i << 4 | BEL_FF]);
             if (ff1 && ff1->ff.d != nullptr && ff1->ff.d->driver.cell != nullptr) {
                 auto &drv = ff1->ff.d->driver;
+                // From the CARRY8, only this eighth's O (XORIN) and CO (CY) are direct;
+                // another eighth's output leaves the slice and has to come back in on X/I.
+                bool carry_direct = carry8 != nullptr && (ff1->ff.d == carry8->carry.out_sigs[i] ||
+                                                          ff1->ff.d == carry8->carry.cout_sigs[i]);
                 if ((drv.cell == lut6_cell && drv.port != id_MC31) || drv.cell == lut5_cell ||
-                    drv.cell == out_fmux_cell || (carry8_cell != nullptr && drv.cell == carry8_cell)) {
-                    // Direct, OK: FFMUX selects the CARRY8's XORIN or CY
+                    drv.cell == out_fmux_cell || carry_direct) {
+                    // Direct, OK: FFMUX selects the LUT, the F7F8 mux, or the CARRY8's XORIN or CY
                 } else {
                     // Indirect, must use X input
                     if (x_net == nullptr)
@@ -199,9 +225,13 @@ bool XilinxImpl::xcu_logic_tile_valid(IdString tile_type, const LogicTileStatus 
             auto ff2 = get_tags(lts.cells[i << 4 | BEL_FF2]);
             if (ff2 && ff2->ff.d != nullptr && ff2->ff.d->driver.cell != nullptr) {
                 auto &drv = ff2->ff.d->driver;
+                // From the CARRY8, only this eighth's O (XORIN) and CO (CY) are direct;
+                // another eighth's output leaves the slice and has to come back in on X/I.
+                bool carry_direct = carry8 != nullptr && (ff2->ff.d == carry8->carry.out_sigs[i] ||
+                                                          ff2->ff.d == carry8->carry.cout_sigs[i]);
                 if ((drv.cell == lut6_cell && drv.port != id_MC31) || drv.cell == lut5_cell ||
-                    drv.cell == out_fmux_cell || (carry8_cell != nullptr && drv.cell == carry8_cell)) {
-                    // Direct, OK: FFMUX selects the CARRY8's XORIN or CY
+                    drv.cell == out_fmux_cell || carry_direct) {
+                    // Direct, OK: FFMUX selects the LUT, the F7F8 mux, or the CARRY8's XORIN or CY
                 } else {
                     // Indirect, must use I input
                     if (i_net == nullptr)
@@ -426,6 +456,13 @@ bool XilinxImpl::xc7_logic_tile_valid(IdString tile_type, const LogicTileStatus 
                             }
                         }
                         if (shared < need_shared) {
+                            DBG();
+                            return false;
+                        }
+                        // The count above is per pin, so a net on two pins of one LUT (often a
+                        // constant) counts as shared twice. fixup_placement wires the pair by
+                        // distinct nets, and with more than five it has no A6 left to tie high.
+                        if (lut_pair_distinct_inputs(lut6, lut5) > 5) {
                             DBG();
                             return false;
                         }
