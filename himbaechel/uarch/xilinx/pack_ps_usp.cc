@@ -232,4 +232,78 @@ void USPacker::place_ps_boundary()
         log_warning("PS8 pins: %d pins with no INT tile within reach.\n", no_row);
 }
 
+// The device has one PS8, but a design may instantiate it more than once: the
+// KV260 board wrapper takes PL_CLK0 from a PS8 of its own, and a processor
+// block (hotc blocks/processors/zynq-ps8) instantiates another for the AXI
+// port it bridges. Those are pins of the same hard block, so they become one
+// cell: every connected pin of the others moves onto the first. An input pin
+// connected in two instances is an error (two drivers of one PS pin); an
+// output pin used in two is one signal, so the second net's users move onto
+// the first net.
+void USPacker::merge_ps8()
+{
+    std::vector<CellInfo *> ps;
+    for (auto &cell : ctx->cells)
+        if (cell.second->type == id_PS8)
+            ps.push_back(cell.second.get());
+    if (ps.size() < 2)
+        return;
+    std::sort(ps.begin(), ps.end(), [&](CellInfo *a, CellInfo *b) { return a->name.str(ctx) < b->name.str(ctx); });
+    CellInfo *base = ps.front();
+    int moved = 0, shared = 0;
+    for (size_t i = 1; i < ps.size(); i++) {
+        CellInfo *ci = ps.at(i);
+        std::vector<IdString> pnames;
+        for (auto &port : ci->ports)
+            pnames.push_back(port.first);
+        for (IdString pn : pnames) {
+            PortInfo &pi = ci->ports.at(pn);
+            NetInfo *net = pi.net;
+            if (net == nullptr)
+                continue;
+            NetInfo *bnet = base->ports.count(pn) ? base->ports.at(pn).net : nullptr;
+            if (pi.type == PORT_OUT) {
+                if (net->users.empty()) {
+                    ci->disconnectPort(pn);
+                    continue;
+                }
+                if (bnet == nullptr) {
+                    if (base->ports.count(pn))
+                        base->disconnectPort(pn);
+                    ci->movePortTo(pn, base, pn);
+                    moved++;
+                    continue;
+                }
+                std::vector<PortRef> users;
+                for (auto &u : net->users)
+                    users.push_back(u);
+                for (auto &u : users) {
+                    u.cell->disconnectPort(u.port);
+                    u.cell->connectPort(u.port, bnet);
+                }
+                ci->disconnectPort(pn);
+                shared++;
+            } else {
+                if (bnet != nullptr)
+                    log_error("PS8 pin %s is connected in both '%s' and '%s'; the device has one PS8, so each "
+                              "input pin can have only one driver\n",
+                              pn.c_str(ctx), ctx->nameOf(base), ctx->nameOf(ci));
+                if (base->ports.count(pn))
+                    base->disconnectPort(pn);
+                ci->movePortTo(pn, base, pn);
+                moved++;
+            }
+        }
+        for (IdString pn : pnames)
+            ci->disconnectPort(pn);
+        for (auto &param : ci->params)
+            if (!base->params.count(param.first))
+                base->params[param.first] = param.second;
+    }
+    for (size_t i = 1; i < ps.size(); i++)
+        ctx->cells.erase(ps.at(i)->name);
+    log_info("PS8: merged %d instances into '%s' (%d pins moved, %d outputs shared).\n", int(ps.size()),
+             ctx->nameOf(base), moved, shared);
+}
+
 NEXTPNR_NAMESPACE_END

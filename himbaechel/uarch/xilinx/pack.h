@@ -253,6 +253,8 @@ struct USPacker : public XilinxPacker
 
     // Flip-flops wired straight to PS8 pins, pinned beside the PS
     void place_ps_boundary();
+    // Several PS8 instances with disjoint pins become the one PS8
+    void merge_ps8();
 
     // Families of cell not yet ported to UltraScale+; error out rather than
     // mis-pack them.

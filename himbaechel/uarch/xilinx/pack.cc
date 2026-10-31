@@ -835,6 +835,7 @@ void XilinxImpl::pack()
 
     if (usp) {
         USPacker packer(ctx, this);
+        packer.merge_ps8();
         packer.check_unsupported();
         packer.pack_constants();
         packer.pack_inverters();
