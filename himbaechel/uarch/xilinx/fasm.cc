@@ -1933,6 +1933,29 @@ struct FasmBackend
         return p != std::string::npos && std::sscanf(name.c_str() + p, "_X%dY%d", &x, &y) == 2;
     }
 
+    // How many inverting clock-spine drivers (CLK_CMT_DRVR_TRI_ESD_*_SCHMITT_B)
+    // lie on the routed path from the clock's source to this pip.
+    int usp_clock_inversions(PipId pip)
+    {
+        NetInfo *net = ctx->getBoundPipNet(pip);
+        if (net == nullptr)
+            return 0;
+        int n = 0;
+        WireId w = ctx->getPipSrcWire(pip);
+        for (int guard = 0; guard < 100000; guard++) {
+            auto it = net->wires.find(w);
+            if (it == net->wires.end() || it->second.pip == PipId())
+                break;
+            PipId up = it->second.pip;
+            auto &pd = chip_pip_info(ctx->chip_info, up);
+            std::string dst = IdString(chip_tile_info(ctx->chip_info, up.tile).wires[pd.dst_wire].name).str(ctx);
+            if (boost::contains(dst, "CLK_CMT_DRVR_TRI_ESD") && boost::ends_with(dst, "_SCHMITT_B"))
+                n++;
+            w = ctx->getPipSrcWire(up);
+        }
+        return n;
+    }
+
     // UltraScale+ pips whose configuration is NOT a routing bit: mostly
     // route-throughs, selected by the passed site's own configuration, plus
     // the PS interface. prjuray has no pip feature for any of them, and
@@ -1963,7 +1986,14 @@ struct FasmBackend
             write_choice("IN_USE", "V1");
             write_choice("CE_TYPE", "SYNC");
             write_choice("CEINV", "V0");
-            write_choice("IINV", "V1");
+            // The vertical clock spine's drivers (CLK_CMT_DRVR_TRI_ESD_*_SCHMITT_B)
+            // invert. A region whose clock passed through an odd number of them
+            // runs on the inverted clock unless its leaves invert it back, as
+            // Vivado does (IINV.V0 in those regions, V1 where the count is even).
+            // Without this, logic in such a region captured half a cycle early:
+            // every K26 design spanning several clock regions failed on silicon
+            // (0-ultrascale-bits designs/kv260_ps8_block_test_3reg).
+            write_choice("IINV", (usp_clock_inversions(pip) & 1) ? "V0" : "V1");
             write_choice("DELAY_TAP", "V0");
             pop(3);
             return true;
