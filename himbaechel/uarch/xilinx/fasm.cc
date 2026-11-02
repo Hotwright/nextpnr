@@ -2851,19 +2851,24 @@ struct FasmBackend
         return {l, u};
     }
 
-    void write_bram_width_usp(CellInfo *ci, const std::string &name, bool is_36)
+    void write_bram_width_usp(CellInfo *ci, const std::string &name, bool is_36, bool sdp_ram)
     {
         int width = int_or_default(ci->params, ctx->id(name), 0);
-        int sdp = is_36 ? 72 : 36;
         int full = is_36 ? 36 : 18;
-        if (width == 0)
-            width = full;
-        bool sdp_port = (name == "READ_WIDTH_A" || name == "WRITE_WIDTH_B");
-        if (width == sdp && sdp_port) {
-            write_bit(name + ".W" + std::to_string(full));
-            write_bit(name + "." + std::to_string(sdp));
+        // Simple dual port: Vivado sets only the SDP bit on READ_WIDTH_A and
+        // WRITE_WIDTH_B and leaves every width bit clear, on those two ports
+        // and on the two unused ones alike (kv260_bram_char v18L/v44U/v74).
+        // Writing W18/W36 as well, as this once did, gives a RAM that reads
+        // back wrong on the board (kv260_tokenizer_sm). prjuray calls the bit
+        // <port>.36 (.72 on a RAMB36), which a FASM parser cannot read, so it
+        // is written <port>.SDP (db-corrections/zynqusp/segbits_bram.corrections).
+        if (sdp_ram) {
+            if (name == "READ_WIDTH_A" || name == "WRITE_WIDTH_B")
+                write_bit(name + ".SDP");
             return;
         }
+        if (width == 0)
+            width = full;
         static const std::set<int> w18 = {1, 2, 4, 9, 18}, w36 = {1, 2, 4, 9, 18, 36};
         if (!(is_36 ? w36 : w18).count(width))
             log_error("%s '%s': unsupported %s %d\n", ci->type.c_str(ctx), ctx->nameOf(ci), name.c_str(), width);
@@ -2889,7 +2894,7 @@ struct FasmBackend
         push(site);
         write_bit("IN_USE");
         for (auto w : {"READ_WIDTH_A", "WRITE_WIDTH_A", "READ_WIDTH_B", "WRITE_WIDTH_B"})
-            write_bram_width_usp(ci, w, is_36);
+            write_bram_width_usp(ci, w, is_36, sdp);
         write_bool_usp("CLKARDCLKINV", bool_or_default(ci->params, ctx->id("IS_CLKARDCLK_INVERTED"), false));
         write_bool_usp("CLKBWRCLKINV", bool_or_default(ci->params, ctx->id("IS_CLKBWRCLK_INVERTED"), false));
         for (auto &invpin : invertible_pins[orig]) {
