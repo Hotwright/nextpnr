@@ -2855,16 +2855,28 @@ struct FasmBackend
     {
         int width = int_or_default(ci->params, ctx->id(name), 0);
         int full = is_36 ? 36 : 18;
-        // Simple dual port: Vivado sets only the SDP bit on READ_WIDTH_A and
-        // WRITE_WIDTH_B and leaves every width bit clear, on those two ports
-        // and on the two unused ones alike (kv260_bram_char v18L/v44U/v74).
-        // Writing W18/W36 as well, as this once did, gives a RAM that reads
-        // back wrong on the board (kv260_tokenizer_sm). prjuray calls the bit
-        // <port>.36 (.72 on a RAMB36), which a FASM parser cannot read, so it
-        // is written <port>.SDP (db-corrections/zynqusp/segbits_bram.corrections).
+        // Simple dual port, as measured on the KV260 (0-ultrascale-bits
+        // designs/kv260_sdp_bram_test, a 512x32 RAMB18E2 filled and read back):
+        //   read:  READ_WIDTH_A.SDP alone. With W18 on READ_WIDTH_A/B as well,
+        //          the RAM reads back garbage.
+        //   write: WRITE_WIDTH_A.W<full> and WRITE_WIDTH_B.W<full>, plus
+        //          WRITE_WIDTH_B.SDP. With no write width bits, each 18-bit half
+        //          stores only its bit 0 (the all-clear code is width 1).
+        // The decoded Vivado reference (kv260_bram_char v18L) shows only the two
+        // SDP bits, which looked like the whole story and is not: trust the board.
+        // prjuray calls the SDP bit <port>.36 (.72 on a RAMB36), which a FASM
+        // parser cannot read, so it is written <port>.SDP
+        // (db-corrections/zynqusp/segbits_bram.corrections). The RAMB36E2 (SDP72)
+        // follows the same pattern with W36; that case is not yet board-tested.
         if (sdp_ram) {
-            if (name == "READ_WIDTH_A" || name == "WRITE_WIDTH_B")
+            if (name == "READ_WIDTH_A")
                 write_bit(name + ".SDP");
+            else if (name == "WRITE_WIDTH_A")
+                write_bit(name + ".W" + std::to_string(full));
+            else if (name == "WRITE_WIDTH_B") {
+                write_bit(name + ".W" + std::to_string(full));
+                write_bit(name + ".SDP");
+            }
             return;
         }
         if (width == 0)
@@ -2895,8 +2907,18 @@ struct FasmBackend
         write_bit("IN_USE");
         for (auto w : {"READ_WIDTH_A", "WRITE_WIDTH_A", "READ_WIDTH_B", "WRITE_WIDTH_B"})
             write_bram_width_usp(ci, w, is_36, sdp);
-        write_bool_usp("CLKARDCLKINV", bool_or_default(ci->params, ctx->id("IS_CLKARDCLK_INVERTED"), false));
-        write_bool_usp("CLKBWRCLKINV", bool_or_default(ci->params, ctx->id("IS_CLKBWRCLK_INVERTED"), false));
+        // The block RAM's clock arrives inverted from the slices' when both hang
+        // off the same leaf polarity: Vivado puts BRAM columns on leaves of the
+        // opposite IINV (kv260_bram_char's reference), which write_pip_as_site_config_usp
+        // does not. Inverting at the RAM's own clock pins instead works whichever
+        // leaf the router picks. Measured on a KV260 (0-ultrascale-bits
+        // designs/kv260_bram_hold_test): a read address that changes on the edge
+        // that reads it -- a FIFO pointer, a program counter -- read address + 1 on
+        // every clock in two clock regions of opposite leaf IINV; with the pins
+        // inverted, 0 mismatches in 84M clocks. Writes, and reads whose address
+        // was stable for a cycle, worked either way, which is how it hid.
+        write_bool_usp("CLKARDCLKINV", !bool_or_default(ci->params, ctx->id("IS_CLKARDCLK_INVERTED"), false));
+        write_bool_usp("CLKBWRCLKINV", !bool_or_default(ci->params, ctx->id("IS_CLKBWRCLK_INVERTED"), false));
         for (auto &invpin : invertible_pins[orig]) {
             bool inv = bool_or_default(ci->params, ctx->idf("IS_%s_INVERTED", invpin.c_str(ctx)), false);
             if (invpin == id_RSTREGB)
