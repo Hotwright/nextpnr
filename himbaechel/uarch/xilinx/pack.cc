@@ -815,7 +815,56 @@ void XC7Packer::pack_bram()
 
 void XilinxPacker::pack_inverters()
 {
-    // FIXME: fold where possible
+    // UltraScale+ block RAM clocks: an inverter whose output only clocks RAMB
+    // ports folds into the ports' own clock inversion. Yosys's BRAM library
+    // maps only rising-edge ports, so a falling-edge read (hotc's dual-bank
+    // variable table, IP/variable.sv) arrives as INV -> CLKBWRCLK. Left as a
+    // LUT1, that clock leaves the clock network for general routing. Folded,
+    // the pin hangs on the clock net and IS_<pin>_INVERTED is toggled, which
+    // fasm.cc composes with its own RAMB clock inversion (CLK*INV =
+    // !IS_*_INVERTED). Clock pins only: the other invertible RAMB pins are
+    // handled by the tie-off logic, and an inverter with any other user stays.
+    std::vector<IdString> folded;
+    if (uarch->usp) {
+        for (auto &cell : ctx->cells) {
+            CellInfo *ci = cell.second.get();
+            if (ci->type != id_INV)
+                continue;
+            NetInfo *in = ci->getPort(id_I), *out = ci->getPort(id_O);
+            if (in == nullptr || out == nullptr || out->users.entries() == 0)
+                continue;
+            bool all_ram_clocks = true;
+            for (auto &usr : out->users) {
+                bool ram = usr.cell->type == id_RAMB18E2 || usr.cell->type == id_RAMB36E2;
+                if (!ram || (usr.port != id_CLKARDCLK && usr.port != id_CLKBWRCLK)) {
+                    all_ram_clocks = false;
+                    break;
+                }
+            }
+            if (!all_ram_clocks)
+                continue;
+            std::vector<std::pair<CellInfo *, IdString>> pins;
+            for (auto &usr : out->users)
+                pins.emplace_back(usr.cell, usr.port);
+            for (auto &p : pins) {
+                p.first->disconnectPort(p.second);
+                p.first->connectPort(p.second, in);
+                IdString inv = ctx->idf("IS_%s_INVERTED", p.second.c_str(ctx));
+                p.first->params[inv] = Property(int_or_default(p.first->params, inv, 0) == 0 ? 1 : 0);
+            }
+            log_info("Folded inverter %s into %d block RAM clock pin(s).\n", ctx->nameOf(ci), int(pins.size()));
+            folded.push_back(ci->name);
+        }
+        for (IdString name : folded) {
+            CellInfo *ci = ctx->cells.at(name).get();
+            NetInfo *out = ci->getPort(id_O);
+            ci->disconnectPort(id_I);
+            ci->disconnectPort(id_O);
+            if (out != nullptr && out->users.entries() == 0 && out->driver.cell == nullptr)
+                ctx->nets.erase(out->name);
+            ctx->cells.erase(name);
+        }
+    }
     for (auto &cell : ctx->cells) {
         CellInfo *ci = cell.second.get();
         if (ci->type == id_INV) {
