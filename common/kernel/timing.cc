@@ -37,11 +37,34 @@ TimingAnalyser::TimingAnalyser(Context *ctx) : ctx(ctx)
     async_clock_id = 0;
 };
 
+void TimingAnalyser::progress_stage(const char *what)
+{
+    if (!log_progress)
+        return;
+    log_info("Signoff timing analysis: %s\n", what);
+    last_progress = std::chrono::steady_clock::now();
+}
+
+// True at most every 2 s, so a loop can check it per item and log only when due.
+bool TimingAnalyser::progress_due()
+{
+    if (!log_progress)
+        return false;
+    auto now = std::chrono::steady_clock::now();
+    if (now - last_progress < std::chrono::seconds(2))
+        return false;
+    last_progress = now;
+    return true;
+}
+
 void TimingAnalyser::setup(bool update_net_timings, bool update_histogram, bool update_crit_paths)
 {
+    progress_stage("ports and cell delays");
     init_ports();
     get_cell_delays();
+    progress_stage("sorting the timing graph");
     topo_sort();
+    progress_stage("clock domains");
     setup_port_domains();
     identify_related_domains();
     run(true, update_net_timings, update_histogram, update_crit_paths);
@@ -51,10 +74,14 @@ void TimingAnalyser::run(bool update_route_delays, bool update_net_timings, bool
                          bool update_crit_paths)
 {
     reset_times();
-    if (update_route_delays)
+    if (update_route_delays) {
+        progress_stage("route delays");
         get_route_delays();
+    }
+    progress_stage("arrival and required times");
     walk_forward();
     walk_backward();
+    progress_stage("slack and criticality");
     compute_slack();
     compute_criticality();
 
@@ -74,6 +101,7 @@ void TimingAnalyser::run(bool update_route_delays, bool update_net_timings, bool
     }
 
     if (update_crit_paths) {
+        progress_stage("critical path reports");
         build_crit_path_reports();
     }
 }
@@ -1201,12 +1229,19 @@ void TimingAnalyser::build_slack_histogram_report()
 std::vector<CriticalPath> TimingAnalyser::get_min_delay_violations()
 {
     std::vector<CriticalPath> violations;
+    progress_stage("hold (min delay) check");
+    size_t eps_checked = 0;
 
     for (domain_id_t capture_id = 0; capture_id < domain_id_t(domains.size()); ++capture_id) {
         const auto &capture = domains.at(capture_id);
         const auto &capture_clock = capture.key.clock;
 
         for (const auto &ep : capture.endpoints) {
+            if (progress_due())
+                log_info("Signoff timing analysis: hold check, clock domain %d of %d, %zu endpoints checked, "
+                         "%zu hold violations so far\n",
+                         int(capture_id) + 1, int(domains.size()), eps_checked, violations.size());
+            ++eps_checked;
             const CellInfo *ci = cell_info(ep.first);
             int clkInfoCount = 0;
             const TimingPortClass cls = ctx->getPortTimingClass(ci, ep.first.port, clkInfoCount);
@@ -1329,10 +1364,15 @@ PortInfo &TimingAnalyser::port_info(const CellPortKey &key) { return ctx->cells.
 void timing_analysis(Context *ctx, bool print_slack_histogram, bool print_fmax, bool print_path, bool warn_on_failure,
                      bool update_results)
 {
+    log_info("Running signoff timing analysis...\n");
+    auto start = std::chrono::steady_clock::now();
     TimingAnalyser tmg(ctx);
     tmg.setup_only = false;
     tmg.with_clock_skew = true;
+    tmg.log_progress = true;
     tmg.setup(ctx->detailed_timing_report, print_slack_histogram, print_path || print_fmax);
+    log_info("Signoff timing analysis: done in %.1fs\n",
+             std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
 
     auto &result = tmg.get_timing_result();
     ctx->log_timing_results(result, print_slack_histogram, print_fmax, print_path, warn_on_failure);

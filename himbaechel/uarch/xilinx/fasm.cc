@@ -78,7 +78,7 @@ struct FasmBackend
     void blank()
     {
         if (!last_was_blank)
-            out << std::endl;
+            out << "\n";
         last_was_blank = true;
     }
 
@@ -93,7 +93,7 @@ struct FasmBackend
     {
         if (value) {
             write_prefix();
-            out << name << std::endl;
+            out << name << "\n";
         }
     }
 
@@ -103,7 +103,7 @@ struct FasmBackend
         out << name << " = " << int(value.size()) << "'b";
         for (auto bit : boost::adaptors::reverse(value))
             out << ((bit ^ invert) ? '1' : '0');
-        out << std::endl;
+        out << "\n";
     }
 
     void write_int_vector(const std::string &name, uint64_t value, int width, bool invert = false)
@@ -270,7 +270,7 @@ struct FasmBackend
                     boost::erase_all(loc, "_T1");
                     boost::replace_all(loc, "IOI_OLOGIC", "OLOGIC_Y");
                     // the replacements transformed it into : LIOI3_X0Y73.OLOGIC_Y1
-                    out << loc << "." << "ZINV_T1" << std::endl;
+                    out << loc << "." << "ZINV_T1" << "\n";
                 }
             }
             return;
@@ -294,7 +294,7 @@ struct FasmBackend
                             c.replace(y0pos, 2, "Y1");
                     }
                 }
-                out << tile_name << "." << c << std::endl;
+                out << tile_name << "." << c << "\n";
             }
             if (!pp.empty())
                 last_was_blank = false;
@@ -348,7 +348,7 @@ struct FasmBackend
 
             out << tile_name << ".";
             out << dst_name << ".";
-            out << src_name << std::endl;
+            out << src_name << "\n";
 
             if (boost::contains(tile_name, "IOI") && boost::starts_with(dst_name, "IOI_OCLK_")) {
                 dst_name.insert(dst_name.find("OCLK") + 4, 1, 'M');
@@ -360,7 +360,7 @@ struct FasmBackend
                 if (ctx->getBoundWireNet(w) == nullptr) {
                     out << tile_name << ".";
                     out << dst_name << ".";
-                    out << src_name << std::endl;
+                    out << src_name << "\n";
                 }
             }
 
@@ -482,7 +482,7 @@ struct FasmBackend
                 out << belname;
                 if (!skip_pinname)
                     out << "." << pinname;
-                out << std::endl;
+                out << "\n";
             }
         }
     }
@@ -770,7 +770,7 @@ struct FasmBackend
         get_pseudo_pip_data();
         for (auto &net : ctx->nets) {
             NetInfo *ni = net.second.get();
-            out << stringf("# routing for net %s", ni->name.c_str(ctx)) << std::endl;
+            out << stringf("# routing for net %s", ni->name.c_str(ctx)) << "\n";
             for (auto &w : ni->wires) {
                 if (w.second.pip != PipId())
                     write_pip(w.second.pip, ni);
@@ -1865,7 +1865,7 @@ struct FasmBackend
     void write_choice(const std::string &name, const std::string &value)
     {
         write_prefix();
-        out << name << "." << value << std::endl;
+        out << name << "." << value << "\n";
     }
 
     void write_bool_usp(const std::string &name, bool value) { write_choice(name, value ? "V1" : "V0"); }
@@ -2073,14 +2073,14 @@ struct FasmBackend
         if (((tt == "INT_INTF_R_PCIE4" && boost::starts_with(dst, "LOGIC_OUTS_L")) ||
              ((tt == "INT_INTF_L_CMT" || tt == "INT_INTF_L_IO") && boost::starts_with(dst, "LOGIC_OUTS_R"))) &&
             outputs_enabled_tiles.insert(pip.tile).second)
-            out << tile_name << ".OUTPUTS_ENABLED" << std::endl;
+            out << tile_name << ".OUTPUTS_ENABLED" << "\n";
 
         // prjuray spells a routing bit TILE.PIP.DST.SRC (segbits_int.db).
         bool swap = false;
         std::string dir_suffix = usp_pip_direction_suffix(pip, swap);
         if (swap)
             std::swap(dst, src);
-        out << tile_name << ".PIP." << dst << "." << src << dir_suffix << std::endl;
+        out << tile_name << ".PIP." << dst << "." << src << dir_suffix << "\n";
         last_was_blank = false;
     }
 
@@ -3018,32 +3018,54 @@ struct FasmBackend
     void write_fasm()
     {
         get_invertible_pins(ctx, invertible_pins, uarch->usp);
+        // One line per section: the browser's idle watchdog sees only what nextpnr prints,
+        // and without these the FASM writer is silent from start to end.
+        auto section = [](const char *name) { log_info("Writing FASM: %s\n", name); };
         if (uarch->usp) {
             // The BRAM FIFOs and cascades of DSP, BRAM and URAM are not
             // ported yet (the packer rejects them).
+            section("logic");
             write_logic();
+            section("IO");
             write_io_usp();
+            section("routing");
             write_routing();
+            section("block RAM");
             write_bram_usp();
+            section("clocking");
             write_clocking_usp();
+            section("CMT");
             write_cmt_usp();
+            section("DSP");
             write_dsp_usp();
+            section("UltraRAM");
             write_uram_usp();
+            section("PS interface");
             write_pss_intf_usp();
+            section("configuration");
             write_config_usp();
             return;
         }
+        section("logic");
         write_logic();
+        section("IO");
         write_io();
+        section("routing");
         write_routing();
+        section("block RAM");
         write_bram();
+        section("clocking");
         write_clocking();
+        section("IP");
         write_ip();
     }
 };
 
 } // namespace
 
+// Lines end in "\n", not std::endl: endl flushed every line, one WASI write each, and the
+// browser runtime (@yowasp/runtime) copied the whole file on every write. A 17 MB K26 FASM
+// took 12 minutes in the browser that way, against 1 s native.
 void XilinxImpl::write_fasm(const std::string &filename)
 {
     auto out = open_ofstream_and_log_error(filename, "FASM file");

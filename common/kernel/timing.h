@@ -21,6 +21,8 @@
 #ifndef TIMING_H
 #define TIMING_H
 
+#include <chrono>
+
 #include "nextpnr.h"
 
 NEXTPNR_NAMESPACE_BEGIN
@@ -102,6 +104,11 @@ struct TimingAnalyser
     bool with_clock_skew = false;
 
     bool setup_only = false;
+    // Sign-off only (timing_analysis): log each stage and, inside a long loop, a line every
+    // couple of seconds. The browser's idle watchdog sees nothing else: on a K26 design at
+    // 300 MHz the sign-off ran 10+ minutes with no output after "Router2 time" and the run
+    // was taken for hung. Off for the placer's and router's own many re-runs.
+    bool log_progress = false;
     bool have_loops = false;
     bool updated_domains = false;
 
@@ -133,6 +140,9 @@ struct TimingAnalyser
     void build_slack_histogram_report();
 
     std::vector<CriticalPath> get_min_delay_violations();
+    void progress_stage(const char *what);
+    bool progress_due();
+    std::chrono::steady_clock::time_point last_progress;
 
     dict<domain_id_t, delay_t> max_delay_by_domain_pairs();
 

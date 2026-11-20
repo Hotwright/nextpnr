@@ -619,6 +619,7 @@ void XilinxImpl::postRoute()
     ctx->assignArchInfo();
     const ArchArgs &args = ctx->args;
     if (args.options.count("fasm")) {
+        log_info("Writing FASM...\n");
         write_fasm(args.options["fasm"].as<std::string>());
     }
 }
