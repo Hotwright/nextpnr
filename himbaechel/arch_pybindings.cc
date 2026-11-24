@@ -56,6 +56,16 @@ void arch_wrap_python(py::module &m)
     fn_wrapper_1a<Context, decltype(&Context::get_tile_wire_range), &Context::get_tile_wire_range,
                   wrap_context<TileWireRange>, conv_from_str<WireId>>::def_wrap(ctx_cls, "get_tile_wire_range");
 
+    // getBelsInBucket returns a vector<BelId> reference pybind cannot convert;
+    // this returns the bel names instead, so a script can list every bel a
+    // cell type can use (e.g. to export a placement grid).
+    ctx_cls.def("getBelNamesInBucket", [](Context &c, const std::string &bucket) {
+        py::list names;
+        for (BelId bel : c.getBelsInBucket(c.getBelBucketByName(c.id(bucket))))
+            names.append(string_converter<BelId>().to_str(&c, bel));
+        return names;
+    });
+
     typedef const std::vector<BelBucketId> &BelBucketRange;
     typedef const std::vector<BelId> &BelRangeForBelBucket;
 #include "arch_pybindings_shared.h"

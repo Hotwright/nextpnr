@@ -191,6 +191,19 @@ PYBIND11_EMBEDDED_MODULE(MODULE_NAME, m)
     readonly_wrapper<CellInfo &, decltype(&CellInfo::ports), &CellInfo::ports, wrap_context<PortMap &>>::def_wrap(
             ci_cls, "ports");
     readonly_wrapper<CellInfo &, decltype(&CellInfo::bel), &CellInfo::bel, conv_to_str<BelId>>::def_wrap(ci_cls, "bel");
+    // Cluster membership and relative constraints, read-only: a script that
+    // places cells itself (e.g. an external placer loading its result back)
+    // must keep each cluster's children at these offsets from the root.
+    readonly_wrapper<CellInfo &, decltype(&CellInfo::cluster), &CellInfo::cluster, conv_to_str<ClusterId>>::def_wrap(
+            ci_cls, "cluster");
+    readonly_wrapper<CellInfo &, decltype(&CellInfo::constr_x), &CellInfo::constr_x, pass_through<int>>::def_wrap(
+            ci_cls, "constr_x");
+    readonly_wrapper<CellInfo &, decltype(&CellInfo::constr_y), &CellInfo::constr_y, pass_through<int>>::def_wrap(
+            ci_cls, "constr_y");
+    readonly_wrapper<CellInfo &, decltype(&CellInfo::constr_z), &CellInfo::constr_z, pass_through<int>>::def_wrap(
+            ci_cls, "constr_z");
+    readonly_wrapper<CellInfo &, decltype(&CellInfo::constr_abs_z), &CellInfo::constr_abs_z,
+                     pass_through<bool>>::def_wrap(ci_cls, "constr_abs_z");
     readwrite_wrapper<CellInfo &, decltype(&CellInfo::belStrength), &CellInfo::belStrength, pass_through<PlaceStrength>,
                       pass_through<PlaceStrength>>::def_wrap(ci_cls, "belStrength");
 
