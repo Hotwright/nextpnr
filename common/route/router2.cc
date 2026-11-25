@@ -540,7 +540,11 @@ struct Router2
 
         WireId src = nets.at(net->udata).src_wire;
         WireId cursor = ad.sink_wire;
-        while (cursor != src) {
+        // A constant net's arc may end on any wire carrying its value (a tile's
+        // GND_WIRE), as check_arc_routing accepts; walking on to src would read
+        // that root's empty pip and index tile -1.
+        while (cursor != src &&
+               (net->constant_value == IdString() || ctx->getWireConstantValue(cursor) != net->constant_value)) {
             size_t wire_idx = wire_to_idx.at(cursor);
             PipId pip = nd.wires.at(cursor).first;
             bind_pip_internal(nd, usr, wire_idx, pip);
@@ -664,7 +668,10 @@ struct Router2
                 did_something |= (wd.reserved_net != net->udata);
                 if (wd.reserved_net != -1 && wd.reserved_net != net->udata)
                     log_error("attempting to reserve sink input path wire '%s' for nets '%s' and '%s'\n",
-                              ctx->nameOfWire(cursor), ctx->nameOf(nets_by_udata.at(wd.reserved_net)),
+                              ctx->nameOfWire(cursor),
+                              wd.reserved_net == PerWireData::RESERVED_UNAVAILABLE
+                                      ? "<locked binding>"
+                                      : ctx->nameOf(nets_by_udata.at(wd.reserved_net)),
                               ctx->nameOf(net));
                 wd.reserved_net = net->udata;
                 if (cursor == src)

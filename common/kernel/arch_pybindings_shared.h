@@ -12,6 +12,10 @@ readwrite_wrapper<Context, decltype(&Context::top_module), &Context::top_module,
 readonly_wrapper<Context, decltype(&Context::timing_result), &Context::timing_result,
                  wrap_context<TimingResult &>>::def_wrap(ctx_cls, "timing_result");
 
+// A script that adds cell ports after placement (a LUT pin permutation applied
+// at --pre-route) needs their default cell->bel pin mapping before routing.
+fn_wrapper_0a_v<Context, decltype(&Context::assignArchInfo), &Context::assignArchInfo>::def_wrap(ctx_cls,
+                                                                                         "assignArchInfo");
 fn_wrapper_0a<Context, decltype(&Context::getNameDelimiter), &Context::getNameDelimiter, pass_through<char>>::def_wrap(
         ctx_cls, "getNameDelimiter");
 
